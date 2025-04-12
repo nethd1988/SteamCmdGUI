@@ -10,8 +10,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Serialization;
-
-
+using SteamCmdCommon;
 
 namespace SteamCmdGUI
 {
@@ -57,7 +56,7 @@ namespace SteamCmdGUI
 
     public partial class MainForm : Form
     {
-        // Thay vì khởi tạo trực tiếp, khai báo là readonly
+        // Khai báo biến chính
         private readonly string configFolder;
         private readonly string logFile;
         private readonly string bootstrapLogFile;
@@ -70,7 +69,6 @@ namespace SteamCmdGUI
         private Process currentProcess = null;
         private bool runAllProfiles = false;
         private bool cancelAutoRun = false;
-        // Thêm biến lưu thông tin đăng nhập gốc
         private string originalUsername = "";
         private string originalPassword = "";
 
@@ -102,10 +100,251 @@ namespace SteamCmdGUI
                 lblProfileStatus.Text = numericUpDownTimer.Value == 0 ? "Chạy tất cả ngay lập tức" : $"Chế độ chạy tự động: BẬT ({numericUpDownTimer.Value} giờ)";
                 autoRunTimer.Start();
             }
-        }
-    
-    // Phần còn lại của lớp giữ nguyên
 
+            // Kiểm tra trạng thái service khi khởi động
+            CheckServiceStatus();
+        }
+
+        private async Task<bool> IsServiceRunning()
+        {
+            try
+            {
+                ServiceCommand command = new ServiceCommand { CommandType = CommandType.GetStatus };
+                ServiceResponse response = await IpcChannel.SendCommandAsync(command);
+                return response.Success;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async void CheckServiceStatus()
+        {
+            bool serviceRunning = await IsServiceRunning();
+            if (serviceRunning)
+            {
+                lblProfileStatus.Text = "Kết nối đến dịch vụ thành công";
+                // Bật các nút liên quan đến dịch vụ
+                btnConnectToService.Enabled = false;
+                groupBoxService.Enabled = true;
+            }
+            else
+            {
+                lblProfileStatus.Text = "Không thể kết nối đến dịch vụ";
+                // Tắt các nút liên quan đến dịch vụ
+                btnConnectToService.Enabled = true;
+                groupBoxService.Enabled = false;
+            }
+        }
+
+        private async void btnConnectToService_Click(object sender, EventArgs e)
+        {
+            richTextLog.AppendText("Đang kết nối đến dịch vụ...\n");
+            bool serviceRunning = await IsServiceRunning();
+            if (serviceRunning)
+            {
+                richTextLog.AppendText("Kết nối đến dịch vụ thành công!\n");
+                lblProfileStatus.Text = "Kết nối đến dịch vụ thành công";
+                btnConnectToService.Enabled = false;
+                groupBoxService.Enabled = true;
+            }
+            else
+            {
+                richTextLog.AppendText("Không thể kết nối đến dịch vụ!\n");
+                lblProfileStatus.Text = "Không thể kết nối đến dịch vụ";
+                MessageBox.Show("Không thể kết nối đến dịch vụ. Vui lòng kiểm tra xem dịch vụ đã được cài đặt và khởi động chưa.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private async void btnRunService_Click(object sender, EventArgs e)
+        {
+            if (currentProfile == null)
+            {
+                MessageBox.Show("Vui lòng chọn cấu hình trước!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                ServiceCommand command = new ServiceCommand
+                {
+                    CommandType = CommandType.RunProfile,
+                    ProfileName = currentProfile.ProfileName
+                };
+
+                richTextLog.AppendText("Đang gửi yêu cầu chạy đến dịch vụ...\n");
+                ServiceResponse response = await IpcChannel.SendCommandAsync(command);
+
+                if (response.Success)
+                {
+                    richTextLog.AppendText($"Dịch vụ phản hồi: {response.Message}\n");
+                    lblProfileStatus.Text = $"Đang chạy cấu hình: {currentProfile.ProfileName} (trên dịch vụ)";
+                }
+                else
+                {
+                    richTextLog.AppendText($"Lỗi: {response.Message}\n");
+                    MessageBox.Show($"Không thể chạy cấu hình: {response.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                richTextLog.AppendText($"Lỗi khi giao tiếp với dịch vụ: {ex.Message}\n");
+                MessageBox.Show($"Lỗi khi giao tiếp với dịch vụ: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private async void btnRunAllService_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                ServiceCommand command = new ServiceCommand
+                {
+                    CommandType = CommandType.RunAllProfiles
+                };
+
+                richTextLog.AppendText("Đang gửi yêu cầu chạy tất cả cấu hình đến dịch vụ...\n");
+                ServiceResponse response = await IpcChannel.SendCommandAsync(command);
+
+                if (response.Success)
+                {
+                    richTextLog.AppendText($"Dịch vụ phản hồi: {response.Message}\n");
+                    lblProfileStatus.Text = "Đang chạy tất cả cấu hình (trên dịch vụ)";
+                }
+                else
+                {
+                    richTextLog.AppendText($"Lỗi: {response.Message}\n");
+                    MessageBox.Show($"Không thể chạy tất cả cấu hình: {response.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                richTextLog.AppendText($"Lỗi khi giao tiếp với dịch vụ: {ex.Message}\n");
+                MessageBox.Show($"Lỗi khi giao tiếp với dịch vụ: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private async void btnSaveToService_Click(object sender, EventArgs e)
+        {
+            if (SaveProfile())
+            {
+                try
+                {
+                    // Chuyển đổi profile thành chuỗi XML
+                    XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
+                    string profileXml;
+                    using (StringWriter writer = new StringWriter())
+                    {
+                        serializer.Serialize(writer, currentProfile);
+                        profileXml = writer.ToString();
+                    }
+
+                    ServiceCommand command = new ServiceCommand
+                    {
+                        CommandType = CommandType.UpdateConfig,
+                        ProfileName = currentProfile.ProfileName,
+                        Data = profileXml
+                    };
+
+                    richTextLog.AppendText("Đang gửi cập nhật cấu hình đến dịch vụ...\n");
+                    ServiceResponse response = await IpcChannel.SendCommandAsync(command);
+
+                    if (response.Success)
+                    {
+                        richTextLog.AppendText($"Dịch vụ phản hồi: {response.Message}\n");
+                        lblProfileStatus.Text = $"Đã cập nhật cấu hình {currentProfile.ProfileName} trên dịch vụ";
+                    }
+                    else
+                    {
+                        richTextLog.AppendText($"Lỗi: {response.Message}\n");
+                        MessageBox.Show($"Không thể cập nhật cấu hình cho dịch vụ: {response.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    richTextLog.AppendText($"Lỗi khi giao tiếp với dịch vụ: {ex.Message}\n");
+                    MessageBox.Show($"Lỗi khi giao tiếp với dịch vụ: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private async void btnStopService_Click(object sender, EventArgs e)
+        {
+            if (currentProfile == null)
+            {
+                MessageBox.Show("Vui lòng chọn cấu hình trước!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                ServiceCommand command = new ServiceCommand
+                {
+                    CommandType = CommandType.StopProfile,
+                    ProfileName = currentProfile.ProfileName
+                };
+
+                richTextLog.AppendText("Đang gửi yêu cầu dừng đến dịch vụ...\n");
+                ServiceResponse response = await IpcChannel.SendCommandAsync(command);
+
+                if (response.Success)
+                {
+                    richTextLog.AppendText($"Dịch vụ phản hồi: {response.Message}\n");
+                    lblProfileStatus.Text = $"Đã dừng cấu hình: {currentProfile.ProfileName}";
+                }
+                else
+                {
+                    richTextLog.AppendText($"Lỗi: {response.Message}\n");
+                    MessageBox.Show($"Không thể dừng cấu hình: {response.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                richTextLog.AppendText($"Lỗi khi giao tiếp với dịch vụ: {ex.Message}\n");
+                MessageBox.Show($"Lỗi khi giao tiếp với dịch vụ: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void MainForm_Load(object sender, EventArgs e)
+        {
+            CheckServiceStatus();
+        }
+
+        private void ApplyModernStyleToServiceControls()
+        {
+            // Áp dụng style cho nút kết nối service
+            btnConnectToService.FlatStyle = FlatStyle.Flat;
+            btnConnectToService.FlatAppearance.BorderSize = 1;
+            btnConnectToService.BackColor = Color.FromArgb(0, 120, 215);
+            btnConnectToService.ForeColor = Color.White;
+            btnConnectToService.Cursor = Cursors.Hand;
+            btnConnectToService.MouseEnter += (s, e) => btnConnectToService.BackColor = Color.FromArgb(0, 102, 204);
+            btnConnectToService.MouseLeave += (s, e) => btnConnectToService.BackColor = Color.FromArgb(0, 120, 215);
+
+            // Áp dụng style cho các nút trong groupBox
+            foreach (Control ctrl in groupBoxService.Controls)
+            {
+                if (ctrl is Button btn)
+                {
+                    btn.FlatStyle = FlatStyle.Flat;
+                    btn.FlatAppearance.BorderSize = 1;
+                    btn.BackColor = Color.FromArgb(0, 120, 215);
+                    btn.ForeColor = Color.White;
+                    btn.Cursor = Cursors.Hand;
+                    btn.MouseEnter += (s, e) => btn.BackColor = Color.FromArgb(0, 102, 204);
+                    btn.MouseLeave += (s, e) => btn.BackColor = Color.FromArgb(0, 120, 215);
+                }
+            }
+
+            // Áp dụng style riêng cho các nút đặc biệt
+            btnRunService.BackColor = Color.FromArgb(0, 150, 0);
+            btnRunService.MouseEnter += (s, e) => btnRunService.BackColor = Color.FromArgb(0, 130, 0);
+            btnRunService.MouseLeave += (s, e) => btnRunService.BackColor = Color.FromArgb(0, 150, 0);
+
+            btnStopService.BackColor = Color.FromArgb(200, 0, 0);
+            btnStopService.MouseEnter += (s, e) => btnStopService.BackColor = Color.FromArgb(180, 0, 0);
+            btnStopService.MouseLeave += (s, e) => btnStopService.BackColor = Color.FromArgb(200, 0, 0);
+        }
 
         private void SetupAutoRunTimer()
         {
@@ -234,6 +473,9 @@ namespace SteamCmdGUI
             btnRunAll.ForeColor = Color.White;
             btnRunAll.MouseEnter += (s, e) => btnRunAll.BackColor = Color.FromArgb(0, 102, 204);
             btnRunAll.MouseLeave += (s, e) => btnRunAll.BackColor = Color.FromArgb(0, 120, 215);
+
+            // Áp dụng style cho các điều khiển của service
+            ApplyModernStyleToServiceControls();
         }
 
         private void btnRunAll_Click(object sender, EventArgs e)
@@ -1100,7 +1342,6 @@ namespace SteamCmdGUI
                     string request = $"AUTH:{authToken} GET_PROFILE_DETAILS {profileName}";
                     byte[] requestBytes = Encoding.UTF8.GetBytes(request);
                     await stream.WriteAsync(requestBytes, 0, requestBytes.Length);
-
                     byte[] buffer = new byte[4096];
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                     string response = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
@@ -1120,7 +1361,7 @@ namespace SteamCmdGUI
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Lỗi khi lấy chi detailing profile: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"Lỗi khi lấy chi tiết profile: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 richTextLog.AppendText($"Lỗi khi lấy profile {profileName}: {ex.Message}\n");
                 return null;
             }

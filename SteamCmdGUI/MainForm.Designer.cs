@@ -47,8 +47,18 @@
             this.lblProfileStatus = new System.Windows.Forms.Label();
             this.btnConnectToServer = new System.Windows.Forms.Button();
             this.listBoxProfiles = new System.Windows.Forms.ListBox();
+
+            // Khai báo các điều khiển service
+            this.btnConnectToService = new System.Windows.Forms.Button();
+            this.btnRunService = new System.Windows.Forms.Button();
+            this.btnRunAllService = new System.Windows.Forms.Button();
+            this.btnStopService = new System.Windows.Forms.Button();
+            this.btnSaveToService = new System.Windows.Forms.Button();
+            this.groupBoxService = new System.Windows.Forms.GroupBox();
+
             this.groupBoxAutoRun.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.numericUpDownTimer)).BeginInit();
+            this.groupBoxService.SuspendLayout();
             this.SuspendLayout();
 
             this.lblProfileStatus.AutoSize = true;
@@ -271,9 +281,66 @@
             this.listBoxProfiles.TabIndex = 28;
             this.listBoxProfiles.SelectedIndexChanged += new System.EventHandler(this.listBoxProfiles_SelectedIndexChanged);
 
+            // Thiết lập cấu hình cho các điều khiển service
+            this.btnConnectToService.Location = new System.Drawing.Point(12, 508);
+            this.btnConnectToService.Name = "btnConnectToService";
+            this.btnConnectToService.Size = new System.Drawing.Size(120, 23);
+            this.btnConnectToService.TabIndex = 29;
+            this.btnConnectToService.Text = "Kết nối đến dịch vụ";
+            this.btnConnectToService.UseVisualStyleBackColor = true;
+            this.btnConnectToService.Click += new System.EventHandler(this.btnConnectToService_Click);
+
+            this.groupBoxService.Controls.Add(this.btnStopService);
+            this.groupBoxService.Controls.Add(this.btnRunService);
+            this.groupBoxService.Controls.Add(this.btnRunAllService);
+            this.groupBoxService.Controls.Add(this.btnSaveToService);
+            this.groupBoxService.Location = new System.Drawing.Point(12, 540);
+            this.groupBoxService.Name = "groupBoxService";
+            this.groupBoxService.Size = new System.Drawing.Size(394, 85);
+            this.groupBoxService.TabIndex = 30;
+            this.groupBoxService.TabStop = false;
+            this.groupBoxService.Text = "Chế độ Service";
+            this.groupBoxService.Enabled = false;
+
+            this.btnRunService.Location = new System.Drawing.Point(200, 25);
+            this.btnRunService.Name = "btnRunService";
+            this.btnRunService.Size = new System.Drawing.Size(85, 23);
+            this.btnRunService.TabIndex = 0;
+            this.btnRunService.Text = "Chạy (Service)";
+            this.btnRunService.UseVisualStyleBackColor = true;
+            this.btnRunService.Click += new System.EventHandler(this.btnRunService_Click);
+
+            this.btnRunAllService.Location = new System.Drawing.Point(20, 25);
+            this.btnRunAllService.Name = "btnRunAllService";
+            this.btnRunAllService.Size = new System.Drawing.Size(85, 23);
+            this.btnRunAllService.TabIndex = 1;
+            this.btnRunAllService.Text = "Chạy tất cả";
+            this.btnRunAllService.UseVisualStyleBackColor = true;
+            this.btnRunAllService.Click += new System.EventHandler(this.btnRunAllService_Click);
+
+            this.btnStopService.Location = new System.Drawing.Point(290, 25);
+            this.btnStopService.Name = "btnStopService";
+            this.btnStopService.Size = new System.Drawing.Size(85, 23);
+            this.btnStopService.TabIndex = 2;
+            this.btnStopService.Text = "Dừng (Service)";
+            this.btnStopService.UseVisualStyleBackColor = true;
+            this.btnStopService.Click += new System.EventHandler(this.btnStopService_Click);
+
+            this.btnSaveToService.Location = new System.Drawing.Point(110, 25);
+            this.btnSaveToService.Name = "btnSaveToService";
+            this.btnSaveToService.Size = new System.Drawing.Size(85, 23);
+            this.btnSaveToService.TabIndex = 3;
+            this.btnSaveToService.Text = "Lưu cấu hình";
+            this.btnSaveToService.UseVisualStyleBackColor = true;
+            this.btnSaveToService.Click += new System.EventHandler(this.btnSaveToService_Click);
+
+            // Điều chỉnh kích thước form
+            this.ClientSize = new System.Drawing.Size(600, 635);
+
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(600, 505);
+            this.Controls.Add(this.groupBoxService);
+            this.Controls.Add(this.btnConnectToService);
             this.Controls.Add(this.listBoxProfiles);
             this.Controls.Add(this.btnConnectToServer);
             this.Controls.Add(this.lblProfileStatus);
@@ -307,9 +374,11 @@
             this.MaximizeBox = false;
             this.Name = "MainForm";
             this.Text = "STEAM AuTo GL";
+            this.Load += new System.EventHandler(this.MainForm_Load);
             this.groupBoxAutoRun.ResumeLayout(false);
             this.groupBoxAutoRun.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.numericUpDownTimer)).EndInit();
+            this.groupBoxService.ResumeLayout(false);
             this.ResumeLayout(false);
             this.PerformLayout();
         }
@@ -346,5 +415,13 @@
         private System.Windows.Forms.Label lblProfileStatus;
         private System.Windows.Forms.Button btnConnectToServer;
         private System.Windows.Forms.ListBox listBoxProfiles;
+
+        // Khai báo các điều khiển service
+        private System.Windows.Forms.Button btnConnectToService;
+        private System.Windows.Forms.Button btnRunService;
+        private System.Windows.Forms.Button btnRunAllService;
+        private System.Windows.Forms.Button btnStopService;
+        private System.Windows.Forms.Button btnSaveToService;
+        private System.Windows.Forms.GroupBox groupBoxService;
     }
 }

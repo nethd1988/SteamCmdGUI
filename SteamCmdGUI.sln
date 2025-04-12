@@ -5,6 +5,10 @@ VisualStudioVersion = 17.13.35913.81
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SteamCmdGUI", "SteamCmdGUI\SteamCmdGUI.csproj", "{5E9753FE-9503-4664-B380-556B60F4F42E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SteamCmdService", "SteamCmdService\SteamCmdService.csproj", "{9CFC506F-1B95-4292-84F5-36B42D9920DF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SteamCmdServiceInstaller", "SteamCmdServiceInstaller\SteamCmdServiceInstaller.csproj", "{9CD8DE5F-2E6B-4D8C-8F17-9500D6C83980}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +19,14 @@ Global
 		{5E9753FE-9503-4664-B380-556B60F4F42E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5E9753FE-9503-4664-B380-556B60F4F42E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5E9753FE-9503-4664-B380-556B60F4F42E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9CFC506F-1B95-4292-84F5-36B42D9920DF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9CFC506F-1B95-4292-84F5-36B42D9920DF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9CFC506F-1B95-4292-84F5-36B42D9920DF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9CFC506F-1B95-4292-84F5-36B42D9920DF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9CD8DE5F-2E6B-4D8C-8F17-9500D6C83980}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9CD8DE5F-2E6B-4D8C-8F17-9500D6C83980}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9CD8DE5F-2E6B-4D8C-8F17-9500D6C83980}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9CD8DE5F-2E6B-4D8C-8F17-9500D6C83980}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
