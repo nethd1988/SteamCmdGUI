@@ -2,7 +2,7 @@
 using System.IO;
 using System.Xml.Serialization;
 
-namespace SteamCmdService
+namespace SteamCmdCommon
 {
     [Serializable]
     public class GameProfile
@@ -26,20 +26,42 @@ namespace SteamCmdService
 
         public void SaveToFile(string filePath)
         {
-            XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
-            using (StreamWriter writer = new StreamWriter(filePath))
+            try
             {
-                serializer.Serialize(writer, this);
+                // Đảm bảo thư mục tồn tại
+                string directory = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
+                using (StreamWriter writer = new StreamWriter(filePath))
+                {
+                    serializer.Serialize(writer, this);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Lỗi khi lưu profile: {ex.Message}", ex);
             }
         }
 
         public static GameProfile LoadFromFile(string filePath)
         {
             if (!File.Exists(filePath)) return null;
-            XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
-            using (StreamReader reader = new StreamReader(filePath))
+
+            try
             {
-                return (GameProfile)serializer.Deserialize(reader);
+                XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
+                using (StreamReader reader = new StreamReader(filePath))
+                {
+                    return (GameProfile)serializer.Deserialize(reader);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Lỗi khi đọc profile: {ex.Message}", ex);
             }
         }
     }
