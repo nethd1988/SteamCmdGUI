@@ -88,6 +88,10 @@
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\SteamCmdServiceInstaller\SteamCmdServiceInstaller.csproj">
+      <Project>{9cd8de5f-2e6b-4d8c-8f17-9500d6c83980}</Project>
+      <Name>SteamCmdServiceInstaller</Name>
+    </ProjectReference>
     <ProjectReference Include="..\SteamCmdService\SteamCmdService.csproj">
       <Project>{9cfc506f-1b95-4292-84f5-36b42d9920df}</Project>
       <Name>SteamCmdService</Name>
