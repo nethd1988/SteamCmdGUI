@@ -1,17 +1,944 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Drawing;
-using System.IO;
-using System.IO.Compression;
-using System.Net.Sockets;
-using System.Security.Cryptography;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows.Forms;
-using System.Xml.Serialization;
+﻿private void ParseAndDisplayStatus(string status)
+{
+    // Parse key-value pairs from status string
+    Dictionary<string, string> statusValues = new Dictionary<string, string>();
+    string[] pairs = status.Split(';');
 
+    foreach (string pair in pairs)
+    {
+        if (string.IsNullOrEmpty(pair)) continue;
 
+        string[] keyValue = pair.Split('=');
+        if (keyValue.Length == 2)
+        {
+            statusValues[keyValue[0]] = keyValue[1];
+        }
+    }
+
+    // Update UI based on status
+    if (statusValues.TryGetValue("RUNNING", out string running) && running == "True")
+    {
+        btnRun.Enabled = false;
+        btnRunAll.Enabled = false;
+        btnStop.Enabled = true;
+        progressBar.Visible = true;
+        progressBar.Style = ProgressBarStyle.Marquee;
+
+        if (statusValues.TryGetValue("CURRENT_PROFILE", out string profileName) && profileName != "None")
+        {
+            if (statusValues.TryGetValue("RUN_ALL", out string runAll) && runAll == "true")
+            {
+                if (statusValues.TryGetValue("CURRENT_INDEX", out string currentIndex) &&
+                    statusValues.TryGetValue("TOTAL_PROFILES", out string totalProfiles))
+                {
+                    statusLabel.Text = $"Đang chạy cấu hình ({currentIndex}/{totalProfiles}): {profileName}";
+                }
+                else
+                {
+                    statusLabel.Text = $"Đang chạy tất cả các cấu hình: {profileName}";
+                }
+            }
+            else
+            {
+                statusLabel.Text = $"Đang chạy cấu hình: {profileName}";
+            }
+        }
+        else
+        {
+            statusLabel.Text = "Đang chạy...";
+        }
+    }
+    else
+    {
+        btnRun.Enabled = true;
+        btnRunAll.Enabled = true;
+        btnStop.Enabled = false;
+        progressBar.Visible = false;
+
+        if (statusValues.TryGetValue("LAST_RESULT", out string lastResult))
+        {
+            statusLabel.Text = lastResult;
+        }
+        else
+        {
+            statusLabel.Text = "Sẵn sàng";
+        }
+    }
+}
+
+private async void btnServiceControl_Click(object sender, EventArgs e)
+{
+    try
+    {
+        ServiceController sc = new ServiceController(ServiceName);
+
+        if (sc.Status == ServiceControllerStatus.Running)
+        {
+            // Stop the service
+            sc.Stop();
+            sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(30));
+            isConnectedToService = false;
+            btnServiceControl.Text = "Khởi động Service";
+            statusLabel.Text = "Service đã dừng";
+            lblProfileStatus.Text = $"Trạng thái dịch vụ: {GetServiceStatusText(sc.Status)}";
+        }
+        else if (sc.Status == ServiceControllerStatus.Stopped)
+        {
+            // Start the service
+            sc.Start();
+            sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(30));
+
+            // Wait a moment for the service to initialize
+            await Task.Delay(1000);
+
+            // Connect to the service
+            await ConnectToService();
+
+            if (isConnectedToService)
+            {
+                await GetProfilesFromService();
+                btnServiceControl.Text = "Dừng Service";
+                lblProfileStatus.Text = $"Trạng thái dịch vụ: {GetServiceStatusText(sc.Status)}";
+            }
+        }
+    }
+    catch (InvalidOperationException) // Service may not be installed
+    {
+        DialogResult result = MessageBox.Show(
+            "Dịch vụ SteamCmdService chưa được cài đặt. Bạn có muốn cài đặt ngay không?",
+            "Dịch vụ chưa được cài đặt",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
+
+        if (result == DialogResult.Yes)
+        {
+            await InstallService();
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Lỗi khi điều khiển dịch vụ: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+}
+
+private async Task InstallService()
+{
+    try
+    {
+        // Determine the service file paths
+        string serviceExePath = Path.Combine(Application.StartupPath, "SteamCmdService.exe");
+
+        if (!File.Exists(serviceExePath))
+        {
+            MessageBox.Show(
+                "Không tìm thấy file thực thi của dịch vụ (SteamCmdService.exe).\n" +
+                "Vui lòng đảm bảo file này nằm cùng thư mục với ứng dụng này.",
+                "File không tồn tại",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
+        }
+
+        // Run the installer with admin privileges
+        ProcessStartInfo psi = new ProcessStartInfo
+        {
+            FileName = "sc.exe",
+            Arguments = $"create {ServiceName} binPath= \"{serviceExePath}\" DisplayName= \"Steam CMD Service\" start= auto",
+            Verb = "runas", // Request admin privileges
+            UseShellExecute = true,
+            CreateNoWindow = true
+        };
+
+        using (Process process = Process.Start(psi))
+        {
+            process.WaitForExit();
+            if (process.ExitCode == 0)
+            {
+                MessageBox.Show(
+                    "Dịch vụ đã được cài đặt thành công.\nBây giờ bạn có thể khởi động dịch vụ.",
+                    "Cài đặt thành công",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+
+                // Try to start the service
+                ServiceController sc = new ServiceController(ServiceName);
+                sc.Start();
+                sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(30));
+
+                // Wait a moment for the service to initialize
+                await Task.Delay(1000);
+
+                // Connect to the service
+                await ConnectToService();
+
+                if (isConnectedToService)
+                {
+                    await GetProfilesFromService();
+                    btnServiceControl.Text = "Dừng Service";
+                    lblProfileStatus.Text = $"Trạng thái dịch vụ: Đang chạy";
+                }
+            }
+            else
+            {
+                MessageBox.Show(
+                    "Không thể cài đặt dịch vụ. Mã lỗi: " + process.ExitCode,
+                    "Lỗi cài đặt",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Lỗi khi cài đặt dịch vụ: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+}
+
+private async void btnRun_Click(object sender, EventArgs e)
+{
+    if (!isConnectedToService)
+    {
+        MessageBox.Show("Không có kết nối đến dịch vụ. Vui lòng khởi động dịch vụ trước.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    if (await SaveProfileToService())
+    {
+        await RunProfileOnService(currentProfile.ProfileName);
+    }
+}
+
+private async Task<bool> RunProfileOnService(string profileName)
+{
+    try
+    {
+        using (TcpClient client = new TcpClient())
+        {
+            await client.ConnectAsync(ServiceAddress, ServicePort);
+            using (NetworkStream stream = client.GetStream())
+            {
+                byte[] request = Encoding.UTF8.GetBytes($"RUN_PROFILE {profileName}");
+                await stream.WriteAsync(request, 0, request.Length);
+
+                byte[] response = new byte[1024];
+                int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                if (responseStr == "OPERATION_STARTED")
+                {
+                    btnRun.Enabled = false;
+                    btnRunAll.Enabled = false;
+                    btnStop.Enabled = true;
+                    progressBar.Visible = true;
+                    progressBar.Style = ProgressBarStyle.Marquee;
+                    statusLabel.Text = $"Đang chạy cấu hình: {profileName}";
+                    return true;
+                }
+                else if (responseStr == "ALREADY_RUNNING")
+                {
+                    MessageBox.Show("Một tiến trình SteamCMD đang chạy. Vui lòng đợi hoặc dừng tiến trình hiện tại.", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return false;
+                }
+                else
+                {
+                    MessageBox.Show($"Không thể chạy cấu hình: {responseStr}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return false;
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Lỗi khi chạy cấu hình: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        return false;
+    }
+}
+
+private async void btnRunAll_Click(object sender, EventArgs e)
+{
+    if (!isConnectedToService)
+    {
+        MessageBox.Show("Không có kết nối đến dịch vụ. Vui lòng khởi động dịch vụ trước.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    if (profiles.Count == 0)
+    {
+        MessageBox.Show("Không có cấu hình nào để chạy!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    try
+    {
+        using (TcpClient client = new TcpClient())
+        {
+            await client.ConnectAsync(ServiceAddress, ServicePort);
+            using (NetworkStream stream = client.GetStream())
+            {
+                byte[] request = Encoding.UTF8.GetBytes("RUN_ALL");
+                await stream.WriteAsync(request, 0, request.Length);
+
+                byte[] response = new byte[1024];
+                int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                if (responseStr == "OPERATION_STARTED")
+                {
+                    btnRun.Enabled = false;
+                    btnRunAll.Enabled = false;
+                    btnStop.Enabled = true;
+                    progressBar.Visible = true;
+                    progressBar.Style = ProgressBarStyle.Marquee;
+                    statusLabel.Text = "Đang chạy tất cả các cấu hình";
+                }
+                else if (responseStr == "ALREADY_RUNNING")
+                {
+                    MessageBox.Show("Một tiến trình SteamCMD đang chạy. Vui lòng đợi hoặc dừng tiến trình hiện tại.", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else if (responseStr == "NO_PROFILES")
+                {
+                    MessageBox.Show("Không có cấu hình nào trên dịch vụ!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    MessageBox.Show($"Không thể chạy tất cả cấu hình: {responseStr}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Lỗi khi chạy tất cả cấu hình: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+}
+
+private async void btnStop_Click(object sender, EventArgs e)
+{
+    if (!isConnectedToService) return;
+
+    try
+    {
+        using (TcpClient client = new TcpClient())
+        {
+            await client.ConnectAsync(ServiceAddress, ServicePort);
+            using (NetworkStream stream = client.GetStream())
+            {
+                byte[] request = Encoding.UTF8.GetBytes("STOP_OPERATION");
+                await stream.WriteAsync(request, 0, request.Length);
+
+                byte[] response = new byte[1024];
+                int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                if (responseStr == "OPERATION_STOPPED")
+                {
+                    btnRun.Enabled = true;
+                    btnRunAll.Enabled = true;
+                    btnStop.Enabled = false;
+                    progressBar.Visible = false;
+                    statusLabel.Text = "Thao tác đã bị dừng";
+                }
+                else
+                {
+                    MessageBox.Show($"Không thể dừng thao tác: {responseStr}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Lỗi khi dừng thao tác: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+}
+
+private async void btnDelete_Click(object sender, EventArgs e)
+{
+    if (currentProfile == null || cboProfiles.SelectedIndex <= 0)
+    {
+        MessageBox.Show("Vui lòng chọn cấu hình cần xóa!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    DialogResult result = MessageBox.Show(
+        $"Bạn có chắc muốn xóa cấu hình \"{currentProfile.ProfileName}\"?",
+        "Xác nhận xóa",
+        MessageBoxButtons.YesNo,
+        MessageBoxIcon.Question);
+
+    if (result == DialogResult.Yes)
+    {
+        if (!isConnectedToService)
+        {
+            MessageBox.Show("Không có kết nối đến dịch vụ. Vui lòng khởi động dịch vụ trước.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            using (TcpClient client = new TcpClient())
+            {
+                await client.ConnectAsync(ServiceAddress, ServicePort);
+                using (NetworkStream stream = client.GetStream())
+                {
+                    byte[] request = Encoding.UTF8.GetBytes($"DELETE_PROFILE {currentProfile.ProfileName}");
+                    await stream.WriteAsync(request, 0, request.Length);
+
+                    byte[] response = new byte[1024];
+                    int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                    string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                    if (responseStr == "PROFILE_DELETED")
+                    {
+                        profiles.Remove(currentProfile);
+                        cboProfiles.Items.Remove(currentProfile.ProfileName);
+                        cboProfiles.SelectedIndex = 0;
+                        currentProfile = null;
+
+                        MessageBox.Show("Đã xóa cấu hình thành công!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        ClearFields();
+                    }
+                    else if (responseStr == "PROFILE_NOT_FOUND")
+                    {
+                        MessageBox.Show("Không tìm thấy cấu hình trên dịch vụ!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Không thể xóa cấu hình: {responseStr}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Lỗi khi xóa cấu hình: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+}
+
+private async void chkAutoRun_CheckedChanged(object sender, EventArgs e)
+{
+    if (!isConnectedToService) return;
+
+    try
+    {
+        using (TcpClient client = new TcpClient())
+        {
+            await client.ConnectAsync(ServiceAddress, ServicePort);
+            using (NetworkStream stream = client.GetStream())
+            {
+                byte[] request = Encoding.UTF8.GetBytes($"TOGGLE_AUTORUN {chkAutoRun.Checked}");
+                await stream.WriteAsync(request, 0, request.Length);
+
+                byte[] response = new byte[1024];
+                int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                if (responseStr == "AUTORUN_ENABLED")
+                {
+                    lblProfileStatus.Text = numericUpDownTimer.Value == 0 ?
+                        "Chạy tất cả ngay lập tức" :
+                        $"Chế độ chạy tự động: BẬT ({numericUpDownTimer.Value} giờ)";
+                }
+                else if (responseStr == "AUTORUN_DISABLED")
+                {
+                    lblProfileStatus.Text = "Chế độ chạy tự động: TẮT";
+                }
+                else if (responseStr == "NO_PROFILES")
+                {
+                    MessageBox.Show("Không có cấu hình nào để chạy tự động!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    chkAutoRun.Checked = false;
+                }
+                else
+                {
+                    MessageBox.Show($"Không thể thay đổi chế độ tự động: {responseStr}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Lỗi khi thay đổi chế độ tự động: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        chkAutoRun.Checked = !chkAutoRun.Checked; // Revert the checkbox
+    }
+}
+
+private async void numericUpDownTimer_ValueChanged(object sender, EventArgs e)
+{
+    if (!isConnectedToService) return;
+
+    label8.Text = numericUpDownTimer.Value == 0 ? "chạy ngay" : "giờ";
+
+    try
+    {
+        using (TcpClient client = new TcpClient())
+        {
+            await client.ConnectAsync(ServiceAddress, ServicePort);
+            using (NetworkStream stream = client.GetStream())
+            {
+                byte[] request = Encoding.UTF8.GetBytes($"SET_TIMER {numericUpDownTimer.Value}");
+                await stream.WriteAsync(request, 0, request.Length);
+
+                byte[] response = new byte[1024];
+                int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                if (responseStr == "TIMER_SET")
+                {
+                    if (chkAutoRun.Checked)
+                    {
+                        lblProfileStatus.Text = numericUpDownTimer.Value == 0 ?
+                            "Chạy tất cả ngay lập tức" :
+                            $"Chế độ chạy tự động: BẬT ({numericUpDownTimer.Value} giờ)";
+                    }
+                }
+                else
+                {
+                    richTextLog.AppendText($"Không thể đặt thời gian tự động: {responseStr}\n");
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        richTextLog.AppendText($"Lỗi khi đặt thời gian tự động: {ex.Message}\n");
+    }
+}
+
+private void AttachEventHandlers()
+{
+    cboProfiles.SelectedIndexChanged += cboProfiles_SelectedIndexChanged;
+    btnBrowse.Click += btnBrowse_Click;
+    btnSave.Click += btnSave_Click;
+    btnDelete.Click += btnDelete_Click;
+    btnRun.Click += btnRun_Click;
+    btnStop.Click += btnStop_Click;
+    btnAbout.Click += OnBtnAboutClick;
+    btnRunAll.Click += btnRunAll_Click;
+    btnServiceControl.Click += btnServiceControl_Click;
+
+    numericUpDownTimer.ValueChanged += numericUpDownTimer_ValueChanged;
+    chkAutoRun.CheckedChanged += chkAutoRun_CheckedChanged;
+}
+
+private void ApplyModernStyle()
+{
+    this.BackColor = Color.FromArgb(240, 240, 240);
+    foreach (Control ctrl in this.Controls)
+    {
+        if (ctrl is Button btn)
+        {
+            btn.FlatStyle = FlatStyle.Flat;
+            btn.FlatAppearance.BorderSize = 1;
+            btn.BackColor = Color.FromArgb(0, 120, 215);
+            btn.ForeColor = Color.White;
+            btn.Cursor = Cursors.Hand;
+            btn.MouseEnter += (s, e) => btn.BackColor = Color.FromArgb(0, 102, 204);
+            btn.MouseLeave += (s, e) => btn.BackColor = Color.FromArgb(0, 120, 215);
+        }
+        else if (ctrl is TextBox || ctrl is ComboBox || ctrl is RichTextBox)
+        {
+            ctrl.BackColor = Color.White;
+            ctrl.ForeColor = Color.Black;
+        }
+    }
+
+    btnRun.BackColor = Color.FromArgb(0, 150, 0);
+    btnRun.MouseEnter += (s, e) => btnRun.BackColor = Color.FromArgb(0, 130, 0);
+    btnRun.MouseLeave += (s, e) => btnRun.BackColor = Color.FromArgb(0, 150, 0);
+
+    btnStop.BackColor = Color.FromArgb(200, 0, 0);
+    btnStop.MouseEnter += (s, e) => btnStop.BackColor = Color.FromArgb(180, 0, 0);
+    btnStop.MouseLeave += (s, e) => btnStop.BackColor = Color.FromArgb(200, 0, 0);
+
+    richTextLog.BackColor = Color.FromArgb(30, 30, 30);
+    richTextLog.ForeColor = Color.White;
+
+    btnRunAll.BackColor = Color.FromArgb(0, 120, 215);
+    btnRunAll.ForeColor = Color.White;
+    btnRunAll.MouseEnter += (s, e) => btnRunAll.BackColor = Color.FromArgb(0, 102, 204);
+    btnRunAll.MouseLeave += (s, e) => btnRunAll.BackColor = Color.FromArgb(0, 120, 215);
+
+    btnServiceControl.BackColor = Color.FromArgb(100, 100, 100);
+    btnServiceControl.ForeColor = Color.White;
+    btnServiceControl.MouseEnter += (s, e) => btnServiceControl.BackColor = Color.FromArgb(80, 80, 80);
+    btnServiceControl.MouseLeave += (s, e) => btnServiceControl.BackColor = Color.FromArgb(100, 100, 100);
+}
+
+private void cboProfiles_SelectedIndexChanged(object sender, EventArgs e)
+{
+    if (cboProfiles.SelectedIndex <= 0)
+    {
+        ClearFields();
+        currentProfile = null;
+        lblProfileStatus.Text = "Nhập thông tin để tạo cấu hình mới";
+        return;
+    }
+
+    string profileName = cboProfiles.SelectedItem.ToString();
+    foreach (GameProfile profile in profiles)
+    {
+        if (profile.ProfileName == profileName)
+        {
+            LoadProfileToUI(profile);
+            currentProfile = profile;
+            lblProfileStatus.Text = "Đã tải cấu hình: " + profileName;
+            return;
+        }
+    }
+
+    lblProfileStatus.Text = "Không tìm thấy cấu hình: " + profileName;
+}
+
+private void ClearFields()
+{
+    txtProfileName.Text = "";
+    txtInstallDir.Text = "";
+    txtUsername.Text = "";
+    txtPassword.Text = "";
+    txtAppID.Text = "";
+    txtArguments.Text = "-norepairfiles -noverifyfiles";
+    chkValidate.Checked = false;
+    originalUsername = "";
+    originalPassword = "";
+}
+
+private void LoadProfileToUI(GameProfile profile)
+{
+    txtProfileName.Text = profile.ProfileName;
+    txtInstallDir.Text = profile.InstallDir;
+
+    // Không giải mã mật khẩu trực tiếp mà dùng dấu sao để bảo mật
+    txtUsername.Text = "********";
+    txtPassword.Text = "********";
+    txtAppID.Text = profile.AppID;
+    txtArguments.Text = profile.Arguments;
+    chkValidate.Checked = profile.Arguments.Contains("-validate");
+}
+
+private void btnBrowse_Click(object sender, EventArgs e)
+{
+    using (FolderBrowserDialog folderDialog = new FolderBrowserDialog())
+    {
+        folderDialog.Description = "Chọn thư mục cài đặt game";
+        if (!string.IsNullOrEmpty(txtInstallDir.Text) && Directory.Exists(txtInstallDir.Text))
+            folderDialog.SelectedPath = txtInstallDir.Text;
+
+        if (folderDialog.ShowDialog() == DialogResult.OK)
+            txtInstallDir.Text = folderDialog.SelectedPath;
+    }
+}
+
+private async void btnSave_Click(object sender, EventArgs e)
+{
+    await SaveProfileToService();
+}
+
+private void OnBtnAboutClick(object sender, EventArgs e)
+{
+    MessageBox.Show(
+        "STEAM CMD SERVICE\n" +
+        "Phiên bản Windows Service\n\n" +
+        "Dịch vụ này cho phép bạn tự động cập nhật game và ứng dụng Steam ngay cả khi không đăng nhập vào máy tính.\n\n" +
+        "Tác giả: Gà Luộc",
+        "Thông tin",
+        MessageBoxButtons.OK,
+        MessageBoxIcon.Information);
+}
+
+protected override void OnFormClosing(FormClosingEventArgs e)
+{
+    // Dừng các timer
+    if (logsRefreshTimer != null)
+    {
+        logsRefreshTimer.Stop();
+        logsRefreshTimer.Dispose();
+    }
+
+    if (statusRefreshTimer != null)
+    {
+        statusRefreshTimer.Stop();
+        statusRefreshTimer.Dispose();
+    }
+
+    base.OnFormClosing(e);
+}
+
+private string EncryptString(string plainText)
+{
+    if (string.IsNullOrEmpty(plainText)) return "";
+
+    byte[] clearBytes = Encoding.Unicode.GetBytes(plainText);
+    using (Aes encryptor = Aes.Create())
+    {
+        Rfc2898DeriveBytes pdb = new Rfc2898DeriveBytes(encryptionKey, new byte[] { 0x49, 0x76, 0x61, 0x6e, 0x20, 0x4d, 0x65, 0x64, 0x76, 0x65, 0x64, 0x65, 0x76 });
+        encryptor.Key = pdb.GetBytes(32);
+        encryptor.IV = pdb.GetBytes(16);
+
+        using (MemoryStream ms = new MemoryStream())
+        {
+            using (CryptoStream cs = new CryptoStream(ms, encryptor.CreateDecryptor(), CryptoStreamMode.Write))
+            {
+                cs.Write(cipherBytes, 0, cipherBytes.Length);
+                cs.Close();
+            }
+            return Encoding.Unicode.GetString(ms.ToArray());
+        }
+    }
+}
+
+// Phương thức cập nhật UI dựa trên trạng thái kết nối
+private void UpdateUIBasedOnConnectionState()
+{
+    btnServiceControl.Text = serviceState.IsConnected ? "Dừng Service" : "Khởi động Service";
+    btnRun.Enabled = serviceState.IsConnected && !serviceState.IsProcessRunning;
+    btnRunAll.Enabled = serviceState.IsConnected && !serviceState.IsProcessRunning;
+    btnStop.Enabled = serviceState.IsConnected && serviceState.IsProcessRunning;
+    btnSave.Enabled = serviceState.IsConnected;
+    btnDelete.Enabled = serviceState.IsConnected && currentProfile != null;
+    cboProfiles.Enabled = serviceState.IsConnected;
+    progressBar.Visible = serviceState.IsProcessRunning;
+
+    if (serviceState.IsProcessRunning)
+    {
+        progressBar.Style = ProgressBarStyle.Marquee;
+    }
+    else
+    {
+        progressBar.Style = ProgressBarStyle.Continuous;
+    }
+
+    // Cập nhật thông tin AutoRun
+    chkAutoRun.Checked = serviceState.IsAutoRunEnabled;
+    numericUpDownTimer.Value = serviceState.AutoRunHours;
+    label8.Text = serviceState.AutoRunHours == 0 ? "chạy ngay" : "giờ";
+}
+
+// Phương thức kiểm tra và tạo thư mục nếu không tồn tại
+private void EnsureDirectoryExists(string path)
+{
+    if (!Directory.Exists(path))
+    {
+        try
+        {
+            Directory.CreateDirectory(path);
+            richTextLog.AppendText($"Đã tạo thư mục: {path}\n");
+        }
+        catch (Exception ex)
+        {
+            richTextLog.AppendText($"Lỗi khi tạo thư mục {path}: {ex.Message}\n");
+        }
+    }
+}
+
+// Phương thức xác thực dữ liệu nhập vào
+private bool ValidateProfileData()
+{
+    if (string.IsNullOrWhiteSpace(txtProfileName.Text))
+    {
+        MessageBox.Show("Vui lòng nhập tên cấu hình!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        txtProfileName.Focus();
+        return false;
+    }
+
+    if (string.IsNullOrEmpty(txtInstallDir.Text))
+    {
+        MessageBox.Show("Vui lòng nhập đường dẫn cài đặt!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        txtInstallDir.Focus();
+        return false;
+    }
+
+    if (string.IsNullOrEmpty(txtAppID.Text) || !int.TryParse(txtAppID.Text, out _))
+    {
+        MessageBox.Show("Vui lòng nhập ID game hợp lệ (chỉ chứa số)!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        txtAppID.Focus();
+        return false;
+    }
+
+    bool isNewProfile = currentProfile == null;
+    if (isNewProfile)
+    {
+        if (string.IsNullOrEmpty(txtUsername.Text))
+        {
+            MessageBox.Show("Vui lòng nhập tên đăng nhập!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            txtUsername.Focus();
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(txtPassword.Text))
+        {
+            MessageBox.Show("Vui lòng nhập mật khẩu!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            txtPassword.Focus();
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Phương thức reset giao diện người dùng khi mất kết nối
+private void ResetUIForDisconnectedState()
+{
+    isConnectedToService = false;
+    btnServiceControl.Text = "Khởi động Service";
+    statusLabel.Text = "Không có kết nối đến service";
+
+    btnRun.Enabled = false;
+    btnRunAll.Enabled = false;
+    btnStop.Enabled = false;
+    progressBar.Visible = false;
+
+    serviceState.IsConnected = false;
+    serviceState.IsProcessRunning = false;
+
+    UpdateUIBasedOnConnectionState();
+}
+
+// Phương thức kiểm tra cổng tcp đã được sử dụng chưa
+private bool IsTcpPortInUse(int port)
+{
+    try
+    {
+        var ipGlobalProperties = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties();
+        var ipEndPoints = ipGlobalProperties.GetActiveTcpListeners();
+
+        return ipEndPoints.Any(endPoint => endPoint.Port == port);
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+// Phương thức kiểm tra nếu service đã được cài đặt
+private bool IsServiceInstalled()
+{
+    try
+    {
+        ServiceController[] services = ServiceController.GetServices();
+        return services.Any(s => s.ServiceName == ServiceName);
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+// Phương thức kiểm tra trạng thái service
+private ServiceControllerStatus GetServiceStatus()
+{
+    try
+    {
+        using (ServiceController sc = new ServiceController(ServiceName))
+        {
+            return sc.Status;
+        }
+    }
+    catch
+    {
+        return ServiceControllerStatus.Stopped;
+    }
+}
+
+// Phương thức gỡ cài đặt service
+private async Task UninstallService()
+{
+    try
+    {
+        ProcessStartInfo psi = new ProcessStartInfo
+        {
+            FileName = "sc.exe",
+            Arguments = $"delete {ServiceName}",
+            Verb = "runas",
+            UseShellExecute = true,
+            CreateNoWindow = true
+        };
+
+        using (Process process = Process.Start(psi))
+        {
+            process.WaitForExit();
+            if (process.ExitCode == 0)
+            {
+                MessageBox.Show(
+                    "Dịch vụ đã được gỡ cài đặt thành công.",
+                    "Gỡ cài đặt thành công",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+
+                ResetUIForDisconnectedState();
+            }
+            else
+            {
+                MessageBox.Show(
+                    "Không thể gỡ cài đặt dịch vụ. Mã lỗi: " + process.ExitCode,
+                    "Lỗi gỡ cài đặt",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Lỗi khi gỡ cài đặt dịch vụ: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+}
+
+// Bổ sung menu contextual cho gỡ cài đặt service
+private void AddServiceContextMenu()
+{
+    ContextMenuStrip serviceMenu = new ContextMenuStrip();
+    ToolStripMenuItem uninstallItem = new ToolStripMenuItem("Gỡ cài đặt Service");
+    uninstallItem.Click += async (s, e) =>
+    {
+        if (MessageBox.Show(
+            "Bạn có chắc chắn muốn gỡ cài đặt dịch vụ SteamCmdService?\n" +
+            "Việc này sẽ dừng dịch vụ và xóa nó khỏi hệ thống.",
+            "Xác nhận gỡ cài đặt",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning) == DialogResult.Yes)
+        {
+            await UninstallService();
+        }
+    };
+
+    serviceMenu.Items.Add(uninstallItem);
+    btnServiceControl.ContextMenuStrip = serviceMenu;
+}
+    }
+}iveBytes pdb = new Rfc2898DeriveBytes(encryptionKey, new byte[] { 0x49, 0x76, 0x61, 0x6e, 0x20, 0x4d, 0x65, 0x64, 0x76, 0x65, 0x64, 0x65, 0x76 });
+encryptor.Key = pdb.GetBytes(32);
+encryptor.IV = pdb.GetBytes(16);
+
+using (MemoryStream ms = new MemoryStream())
+{
+    using (CryptoStream cs = new CryptoStream(ms, encryptor.CreateEncryptor(), CryptoStreamMode.Write))
+    {
+        cs.Write(clearBytes, 0, clearBytes.Length);
+        cs.Close();
+    }
+    return Convert.ToBase64String(ms.ToArray());
+}
+            }
+        }
+        
+        private string DecryptString(string cipherText)
+{
+    if (string.IsNullOrEmpty(cipherText)) return "";
+
+    byte[] cipherBytes = Convert.FromBase64String(cipherText);
+    using (Aes encryptor = Aes.Create())
+    {
+        Rfc2898Derusing System;
+        using System.Collections.Generic;
+        using System.Diagnostics;
+        using System.Drawing;
+        using System.IO;
+        using System.Net.Sockets;
+        using System.Security.Cryptography;
+        using System.ServiceProcess;
+        using System.Text;
+        using System.Threading.Tasks;
+        using System.Windows.Forms;
+        using System.Xml.Serialization;
 
 namespace SteamCmdGUI
 {
@@ -34,42 +961,42 @@ namespace SteamCmdGUI
             AppID = "";
             Arguments = "-norepairfiles -noverifyfiles";
         }
-
-        public void SaveToFile(string filePath)
-        {
-            XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
-            using (StreamWriter writer = new StreamWriter(filePath))
-            {
-                serializer.Serialize(writer, this);
-            }
-        }
-
-        public static GameProfile LoadFromFile(string filePath)
-        {
-            if (!File.Exists(filePath)) return null;
-            XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
-            using (StreamReader reader = new StreamReader(filePath))
-            {
-                return (GameProfile)serializer.Deserialize(reader);
-            }
-        }
     }
 
     public partial class MainForm : Form
     {
-        // Thay vì khởi tạo trực tiếp, khai báo là readonly
+        private class ConnectionState
+        {
+            public bool IsConnected { get; set; }
+            public bool IsProcessRunning { get; set; }
+            public string CurrentProfile { get; set; }
+            public bool IsAutoRunEnabled { get; set; }
+            public int AutoRunHours { get; set; }
+            public DateTime LastRefresh { get; set; }
+        }
+
+        private const string ServiceName = "SteamCmdService";
+        private const string ServiceAddress = "localhost";
+        private const int ServicePort = 61188;
         private readonly string configFolder;
-        private readonly string logFile;
-        private readonly string bootstrapLogFile;
         private readonly string encryptionKey = "yourEncryptionKey123!@#";
         private List<GameProfile> profiles = new List<GameProfile>();
         private GameProfile currentProfile = null;
-        private System.Timers.Timer autoRunTimer;
-        private int currentProfileIndex = 0;
-        private bool isRunning = false;
-        private Process currentProcess = null;
-        private bool runAllProfiles = false;
-        private bool cancelAutoRun = false;
+        private System.Timers.Timer logsRefreshTimer;
+        private System.Timers.Timer statusRefreshTimer;
+        private bool autoRefreshLogs = true;
+        private bool isConnectedToService = false;
+        private string lastStatus = "";
+        private ConnectionState serviceState = new ConnectionState
+        {
+            IsConnected = false,
+            IsProcessRunning = false,
+            CurrentProfile = null,
+            IsAutoRunEnabled = false,
+            AutoRunHours = 1,
+            LastRefresh = DateTime.MinValue
+        };
+
         // Thêm biến lưu thông tin đăng nhập gốc
         private string originalUsername = "";
         private string originalPassword = "";
@@ -78,305 +1005,342 @@ namespace SteamCmdGUI
         {
             InitializeComponent();
 
-            // Khởi tạo các đường dẫn trong constructor
+            // Khởi tạo đường dẫn
             configFolder = Path.Combine(Application.StartupPath, "Profiles");
-            logFile = Path.Combine(Application.StartupPath, "steamcmd_log.txt");
-            bootstrapLogFile = Path.Combine(Application.StartupPath, "logs", "bootstrap_log");
-
-            KillSteamAndSteamCmdProcesses();
-            ApplyModernStyle();
 
             if (!Directory.Exists(configFolder))
             {
                 Directory.CreateDirectory(configFolder);
             }
 
-            LoadProfiles();
+            ApplyModernStyle();
+            SetupRefreshTimers();
+            CheckServiceStatus();
+
+            // Thêm menu contextual cho service control
+            AddServiceContextMenu();
+
+            // Khôi phục lại các event handlers
             AttachEventHandlers();
-            SetupAutoRunTimer();
-            numericUpDownTimer.Minimum = 0;
-
-            chkAutoRun.Checked = true;
-            if (profiles.Count > 0)
-            {
-                lblProfileStatus.Text = numericUpDownTimer.Value == 0 ? "Chạy tất cả ngay lập tức" : $"Chế độ chạy tự động: BẬT ({numericUpDownTimer.Value} giờ)";
-                autoRunTimer.Start();
-            }
         }
-    
-    // Phần còn lại của lớp giữ nguyên
 
-
-        private void SetupAutoRunTimer()
+        protected override void OnLoad(EventArgs e)
         {
-            autoRunTimer = new System.Timers.Timer();
-            autoRunTimer.Interval = (int)numericUpDownTimer.Value * 60 * 60 * 1000;
-            autoRunTimer.Elapsed += async (s, e) =>
+            base.OnLoad(e);
+
+            // Khởi tạo UI
+            statusLabel.Text = "Đang kiểm tra trạng thái service...";
+            lblProfileStatus.Text = "Chưa kết nối đến service";
+
+            // Khởi tạo thư mục nếu cần
+            EnsureDirectoryExists(configFolder);
+
+            // Kiểm tra trạng thái kết nối
+            CheckServiceStatus();
+
+            // Khởi động các tác vụ nền
+            StartBackgroundTasks();
+        }
+
+        private void SetupRefreshTimers()
+        {
+            // Timer để cập nhật logs từ service
+            logsRefreshTimer = new System.Timers.Timer(1000);
+            logsRefreshTimer.Elapsed += async (s, e) =>
             {
-                if (profiles.Count == 0 || isRunning) return;
-                if (numericUpDownTimer.Value == 0)
+                if (autoRefreshLogs && isConnectedToService)
                 {
-                    this.Invoke(new Action(() =>
-                    {
-                        autoRunTimer.Stop();
-                        RunAllProfiles();
-                    }));
-                }
-                else
-                {
-                    this.Invoke(new Action(() => RunAllProfiles()));
+                    await RefreshLogsFromService();
                 }
             };
-            autoRunTimer.AutoReset = true;
+            logsRefreshTimer.AutoReset = true;
+            logsRefreshTimer.Start();
+
+            // Timer để cập nhật trạng thái từ service
+            statusRefreshTimer = new System.Timers.Timer(3000);
+            statusRefreshTimer.Elapsed += async (s, e) =>
+            {
+                if (isConnectedToService)
+                {
+                    await RefreshStatusFromService();
+                }
+            };
+            statusRefreshTimer.AutoReset = true;
+            statusRefreshTimer.Start();
         }
 
-        private async void RunAllProfiles()
+        // Phương thức bắt đầu các tác vụ nền khi form khởi tạo
+        private void StartBackgroundTasks()
         {
-            if (profiles.Count == 0 || isRunning) return;
-            runAllProfiles = true;
-            cancelAutoRun = false;
-            currentProfileIndex = 0;
-            lblProfileStatus.Text = "Đang chạy tự động tất cả các cấu hình";
+            // Khởi tạo task làm mới trạng thái kết nối định kỳ
+            Task.Run(async () => await RefreshServiceConnectionPeriodically());
 
-            while (currentProfileIndex < profiles.Count && !cancelAutoRun)
+            // Khởi tạo task làm mới log định kỳ
+            Task.Run(async () => await RefreshLogsFromServicePeriodically());
+        }
+
+        // Phương thức làm mới trạng thái kết nối với service định kỳ
+        private async Task RefreshServiceConnectionPeriodically()
+        {
+            while (true)
             {
-                GameProfile profileToRun = profiles[currentProfileIndex];
-                LoadProfileToUI(profileToRun);
-                currentProfile = profileToRun;
-                lblProfileStatus.Text = $"Đang chạy cấu hình ({currentProfileIndex + 1}/{profiles.Count}): {profileToRun.ProfileName}";
-                isRunning = true;
                 try
                 {
-                    await RunSteamCmdAsync();
+                    // Nếu đã kết nối trước đó, kiểm tra kết nối
+                    if (isConnectedToService)
+                    {
+                        await RefreshStatusFromService();
+                    }
+                    // Nếu chưa kết nối, thử kết nối lại
+                    else
+                    {
+                        await ConnectToService();
+                    }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    richTextLog.AppendText($"Lỗi khi chạy cấu hình {profileToRun.ProfileName}: {ex.Message}\n");
-                    richTextLog.AppendText("Bỏ qua và tiếp tục...\n");
+                    // Nếu có lỗi, đánh dấu là không kết nối
+                    if (isConnectedToService)
+                    {
+                        this.Invoke(new Action(() =>
+                        {
+                            isConnectedToService = false;
+                            btnServiceControl.Text = "Khởi động Service";
+                            statusLabel.Text = "Mất kết nối đến service";
+                            UpdateUIBasedOnConnectionState();
+                        }));
+                    }
                 }
-                isRunning = false;
-                currentProfileIndex++;
-                await Task.Delay(2000);
-            }
 
-            runAllProfiles = false;
-            lblProfileStatus.Text = "Đã hoàn thành tất cả các cấu hình";
-            if (numericUpDownTimer.Value == 0) chkAutoRun.Checked = false;
+                // Chờ một khoảng thời gian trước khi kiểm tra lại
+                await Task.Delay(10000); // 10 giây
+            }
         }
 
-        private void AttachEventHandlers()
+        // Phương thức lấy và hiển thị thông tin log từ service
+        private async Task RefreshLogsFromServicePeriodically()
         {
-            cboProfiles.SelectedIndexChanged += cboProfiles_SelectedIndexChanged;
-            btnBrowse.Click += btnBrowse_Click;
-            btnSave.Click += btnSave_Click;
-            btnDelete.Click += btnDelete_Click;
-            btnRun.Click += btnRun_Click;
-            btnStop.Click += OnBtnStopClick;
-            btnAbout.Click += OnBtnAboutClick;
-            btnRunAll.Click += btnRunAll_Click;
-            numericUpDownTimer.ValueChanged += (s, e) =>
+            while (true)
             {
-                label8.Text = numericUpDownTimer.Value == 0 ? "chạy ngay" : "giờ";
-                autoRunTimer.Interval = numericUpDownTimer.Value == 0 ? 1000 : (int)numericUpDownTimer.Value * 60 * 60 * 1000;
-            };
-            chkAutoRun.CheckedChanged += (s, e) =>
-            {
-                if (chkAutoRun.Checked)
+                if (autoRefreshLogs && isConnectedToService)
                 {
-                    if (profiles.Count == 0)
+                    await RefreshLogsFromService();
+                }
+                await Task.Delay(2000); // 2 giây
+            }
+        }
+
+        private void CheckServiceStatus()
+        {
+            try
+            {
+                ServiceController sc = new ServiceController(ServiceName);
+                lblProfileStatus.Text = $"Trạng thái dịch vụ: {GetServiceStatusText(sc.Status)}";
+
+                // Thử kết nối tới service nếu nó đang chạy
+                if (sc.Status == ServiceControllerStatus.Running)
+                {
+                    Task.Run(async () =>
                     {
-                        MessageBox.Show("Không có cấu hình nào để chạy tự động!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        chkAutoRun.Checked = false;
-                        return;
-                    }
-                    lblProfileStatus.Text = numericUpDownTimer.Value == 0 ? "Chạy tất cả ngay lập tức" : $"Chế độ chạy tự động: BẬT ({numericUpDownTimer.Value} giờ)";
-                    autoRunTimer.Start();
+                        await ConnectToService();
+                        await RefreshStatusFromService();
+                        await GetProfilesFromService();
+                    });
                 }
                 else
                 {
-                    autoRunTimer.Stop();
-                    cancelAutoRun = true;
-                    lblProfileStatus.Text = "Chế độ chạy tự động: TẮT";
-                }
-            };
-        }
-
-        private void ApplyModernStyle()
-        {
-            this.BackColor = Color.FromArgb(240, 240, 240);
-            foreach (Control ctrl in this.Controls)
-            {
-                if (ctrl is Button btn)
-                {
-                    btn.FlatStyle = FlatStyle.Flat;
-                    btn.FlatAppearance.BorderSize = 1;
-                    btn.BackColor = Color.FromArgb(0, 120, 215);
-                    btn.ForeColor = Color.White;
-                    btn.Cursor = Cursors.Hand;
-                    btn.MouseEnter += (s, e) => btn.BackColor = Color.FromArgb(0, 102, 204);
-                    btn.MouseLeave += (s, e) => btn.BackColor = Color.FromArgb(0, 120, 215);
-                }
-                else if (ctrl is TextBox || ctrl is ComboBox || ctrl is RichTextBox)
-                {
-                    ctrl.BackColor = Color.White;
-                    ctrl.ForeColor = Color.Black;
+                    isConnectedToService = false;
+                    btnServiceControl.Text = "Khởi động Service";
+                    statusLabel.Text = "Service đang dừng. Nhấn 'Khởi động Service' để bắt đầu.";
                 }
             }
-            btnRun.BackColor = Color.FromArgb(0, 150, 0);
-            btnRun.MouseEnter += (s, e) => btnRun.BackColor = Color.FromArgb(0, 130, 0);
-            btnRun.MouseLeave += (s, e) => btnRun.BackColor = Color.FromArgb(0, 150, 0);
-            btnStop.BackColor = Color.FromArgb(200, 0, 0);
-            btnStop.MouseEnter += (s, e) => btnStop.BackColor = Color.FromArgb(180, 0, 0);
-            btnStop.MouseLeave += (s, e) => btnStop.BackColor = Color.FromArgb(200, 0, 0);
-            richTextLog.BackColor = Color.FromArgb(30, 30, 30);
-            richTextLog.ForeColor = Color.White;
-            btnRunAll.BackColor = Color.FromArgb(0, 120, 215);
-            btnRunAll.ForeColor = Color.White;
-            btnRunAll.MouseEnter += (s, e) => btnRunAll.BackColor = Color.FromArgb(0, 102, 204);
-            btnRunAll.MouseLeave += (s, e) => btnRunAll.BackColor = Color.FromArgb(0, 120, 215);
-        }
-
-        private void btnRunAll_Click(object sender, EventArgs e)
-        {
-            if (profiles.Count == 0)
+            catch (Exception ex)
             {
-                MessageBox.Show("Không có profile nào để chạy!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                lblProfileStatus.Text = "Dịch vụ chưa được cài đặt hoặc lỗi kết nối.";
+                statusLabel.Text = ex.Message;
+                isConnectedToService = false;
+                btnServiceControl.Text = "Cài đặt Service";
             }
-            RunAllProfiles();
         }
 
-        private void LoadProfiles()
+        private string GetServiceStatusText(ServiceControllerStatus status)
         {
-            profiles.Clear();
-            cboProfiles.Items.Clear();
-            cboProfiles.Items.Add("-- Tạo cấu hình mới --");
-
-            if (Directory.Exists(configFolder))
+            switch (status)
             {
-                string[] profileFiles = Directory.GetFiles(configFolder, "*.profile");
-                foreach (string file in profileFiles)
+                case ServiceControllerStatus.Running:
+                    return "Đang chạy";
+                case ServiceControllerStatus.Stopped:
+                    return "Đã dừng";
+                case ServiceControllerStatus.Paused:
+                    return "Tạm dừng";
+                case ServiceControllerStatus.StartPending:
+                    return "Đang khởi động...";
+                case ServiceControllerStatus.StopPending:
+                    return "Đang dừng...";
+                case ServiceControllerStatus.ContinuePending:
+                    return "Đang tiếp tục...";
+                case ServiceControllerStatus.PausePending:
+                    return "Đang tạm dừng...";
+                default:
+                    return "Không xác định";
+            }
+        }
+
+        private async Task ConnectToService()
+        {
+            try
+            {
+                using (TcpClient client = new TcpClient())
                 {
-                    try
+                    await client.ConnectAsync(ServiceAddress, ServicePort);
+                    using (NetworkStream stream = client.GetStream())
                     {
-                        GameProfile profile = GameProfile.LoadFromFile(file);
-                        if (profile != null)
+                        byte[] request = Encoding.UTF8.GetBytes("GET_STATUS");
+                        await stream.WriteAsync(request, 0, request.Length);
+
+                        byte[] response = new byte[1024];
+                        int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                        if (bytesRead > 0)
                         {
-                            profiles.Add(profile);
-                            cboProfiles.Items.Add(profile.ProfileName);
+                            this.Invoke(new Action(() =>
+                            {
+                                isConnectedToService = true;
+                                btnServiceControl.Text = "Dừng Service";
+                                statusLabel.Text = "Đã kết nối tới service";
+                            }));
                         }
                     }
-                    catch (Exception ex)
+                }
+            }
+            catch (Exception ex)
+            {
+                this.Invoke(new Action(() =>
+                {
+                    isConnectedToService = false;
+                    btnServiceControl.Text = "Khởi động Service";
+                    statusLabel.Text = $"Không thể kết nối tới service: {ex.Message}";
+                }));
+            }
+        }
+
+        private async Task GetProfilesFromService()
+        {
+            if (!isConnectedToService) return;
+
+            try
+            {
+                using (TcpClient client = new TcpClient())
+                {
+                    await client.ConnectAsync(ServiceAddress, ServicePort);
+                    using (NetworkStream stream = client.GetStream())
                     {
-                        richTextLog.AppendText($"Lỗi tải profile từ file {file}: {ex.Message}\n");
+                        byte[] request = Encoding.UTF8.GetBytes("GET_PROFILES");
+                        await stream.WriteAsync(request, 0, request.Length);
+
+                        byte[] response = new byte[4096];
+                        int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                        string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                        this.Invoke(new Action(() =>
+                        {
+                            // Xóa danh sách hiện tại
+                            profiles.Clear();
+                            cboProfiles.Items.Clear();
+                            cboProfiles.Items.Add("-- Tạo cấu hình mới --");
+
+                            // Thêm các profile từ service
+                            if (responseStr != "NO_PROFILES")
+                            {
+                                string[] profileNames = responseStr.Split(',');
+                                foreach (string profileName in profileNames)
+                                {
+                                    cboProfiles.Items.Add(profileName);
+                                    // Lấy chi tiết profile sau
+                                    Task.Run(async () => await GetProfileDetailsFromService(profileName));
+                                }
+                            }
+
+                            if (cboProfiles.Items.Count > 0) cboProfiles.SelectedIndex = 0;
+                            statusLabel.Text = "Đã tải danh sách cấu hình từ service";
+                        }));
                     }
                 }
             }
-            if (cboProfiles.Items.Count > 0) cboProfiles.SelectedIndex = 0;
+            catch (Exception ex)
+            {
+                this.Invoke(new Action(() =>
+                {
+                    statusLabel.Text = $"Lỗi khi lấy danh sách cấu hình: {ex.Message}";
+                }));
+            }
         }
 
-        private void cboProfiles_SelectedIndexChanged(object sender, EventArgs e)
+        private async Task GetProfileDetailsFromService(string profileName)
         {
-            if (cboProfiles.SelectedIndex <= 0)
+            if (!isConnectedToService) return;
+
+            try
             {
-                ClearFields();
-                currentProfile = null;
-                lblProfileStatus.Text = "Nhập thông tin để tạo cấu hình mới";
-                return;
-            }
-            string profileName = cboProfiles.SelectedItem.ToString();
-            foreach (GameProfile profile in profiles)
-            {
-                if (profile.ProfileName == profileName)
+                using (TcpClient client = new TcpClient())
                 {
-                    LoadProfileToUI(profile);
-                    currentProfile = profile;
-                    lblProfileStatus.Text = "Đã tải cấu hình: " + profileName;
-                    return;
+                    await client.ConnectAsync(ServiceAddress, ServicePort);
+                    using (NetworkStream stream = client.GetStream())
+                    {
+                        byte[] request = Encoding.UTF8.GetBytes($"GET_PROFILE_DETAILS {profileName}");
+                        await stream.WriteAsync(request, 0, request.Length);
+
+                        byte[] response = new byte[8192];
+                        int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                        string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                        if (responseStr == "PROFILE_NOT_FOUND") return;
+
+                        // Đọc profile XML
+                        XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
+                        using (StringReader reader = new StringReader(responseStr))
+                        {
+                            GameProfile profile = (GameProfile)serializer.Deserialize(reader);
+                            this.Invoke(new Action(() =>
+                            {
+                                // Thêm vào danh sách profile
+                                int existingIndex = profiles.FindIndex(p => p.ProfileName == profile.ProfileName);
+                                if (existingIndex >= 0)
+                                {
+                                    profiles[existingIndex] = profile;
+                                }
+                                else
+                                {
+                                    profiles.Add(profile);
+                                }
+                            }));
+                        }
+                    }
                 }
             }
-            lblProfileStatus.Text = "Không tìm thấy cấu hình: " + profileName;
-        }
-
-        private void ClearFields()
-        {
-            txtProfileName.Text = "";
-            txtInstallDir.Text = "";
-            txtUsername.Text = "";
-            txtPassword.Text = "";
-            txtAppID.Text = "";
-            txtArguments.Text = "-norepairfiles -noverifyfiles";
-            chkValidate.Checked = false;
-            originalUsername = "";
-            originalPassword = "";
-        }
-
-        private void LoadProfileToUI(GameProfile profile)
-        {
-            txtProfileName.Text = profile.ProfileName;
-            txtInstallDir.Text = profile.InstallDir;
-
-            originalUsername = DecryptString(profile.EncryptedUsername);
-            originalPassword = DecryptString(profile.EncryptedPassword);
-
-            txtUsername.Text = "********";
-            txtPassword.Text = "********";
-            txtAppID.Text = profile.AppID;
-            txtArguments.Text = profile.Arguments;
-            chkValidate.Checked = profile.Arguments.Contains("-validate");
-        }
-
-        private void btnBrowse_Click(object sender, EventArgs e)
-        {
-            using (FolderBrowserDialog folderDialog = new FolderBrowserDialog())
+            catch (Exception ex)
             {
-                folderDialog.Description = "Chọn thư mục cài đặt game";
-                if (!string.IsNullOrEmpty(txtInstallDir.Text) && Directory.Exists(txtInstallDir.Text))
-                    folderDialog.SelectedPath = txtInstallDir.Text;
-                if (folderDialog.ShowDialog() == DialogResult.OK)
-                    txtInstallDir.Text = folderDialog.SelectedPath;
+                this.Invoke(new Action(() =>
+                {
+                    richTextLog.AppendText($"Lỗi khi lấy chi tiết cấu hình {profileName}: {ex.Message}\n");
+                }));
             }
         }
 
-        private bool SaveProfile()
+        private async Task<bool> SaveProfileToService()
         {
-            if (string.IsNullOrWhiteSpace(txtProfileName.Text))
+            if (!isConnectedToService)
             {
-                MessageBox.Show("Vui lòng nhập tên cấu hình!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                txtProfileName.Focus();
-                return false;
-            }
-            if (string.IsNullOrEmpty(txtInstallDir.Text))
-            {
-                MessageBox.Show("Vui lòng nhập đường dẫn cài đặt!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                txtInstallDir.Focus();
-                return false;
-            }
-            if (string.IsNullOrEmpty(txtAppID.Text) || !int.TryParse(txtAppID.Text, out _))
-            {
-                MessageBox.Show("Vui lòng nhập ID game hợp lệ (chỉ chứa số)!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                txtAppID.Focus();
+                MessageBox.Show("Không có kết nối đến dịch vụ. Vui lòng khởi động dịch vụ trước.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return false;
             }
 
-            if (currentProfile == null)
+            if (!ValidateProfileData())
             {
-                if (string.IsNullOrEmpty(txtUsername.Text))
-                {
-                    MessageBox.Show("Vui lòng nhập tên đăng nhập!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    txtUsername.Focus();
-                    return false;
-                }
-                if (string.IsNullOrEmpty(txtPassword.Text))
-                {
-                    MessageBox.Show("Vui lòng nhập mật khẩu!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    txtPassword.Focus();
-                    return false;
-                }
+                return false;
             }
 
-            GameProfile profile = currentProfile ?? new GameProfile();
             bool isNewProfile = currentProfile == null;
+            GameProfile profile = currentProfile ?? new GameProfile();
 
             profile.ProfileName = txtProfileName.Text;
             profile.InstallDir = txtInstallDir.Text;
@@ -401,16 +1365,47 @@ namespace SteamCmdGUI
 
             try
             {
-                profile.SaveToFile(Path.Combine(configFolder, SafeFileName(profile.ProfileName) + ".profile"));
-                if (isNewProfile)
+                using (TcpClient client = new TcpClient())
                 {
-                    profiles.Add(profile);
-                    cboProfiles.Items.Add(profile.ProfileName);
-                    cboProfiles.SelectedIndex = cboProfiles.Items.Count - 1;
+                    await client.ConnectAsync(ServiceAddress, ServicePort);
+                    using (NetworkStream stream = client.GetStream())
+                    {
+                        // Serialize profile to XML
+                        XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
+                        string profileXml;
+                        using (StringWriter writer = new StringWriter())
+                        {
+                            serializer.Serialize(writer, profile);
+                            profileXml = writer.ToString();
+                        }
+
+                        byte[] request = Encoding.UTF8.GetBytes("SAVE_PROFILE " + profileXml);
+                        await stream.WriteAsync(request, 0, request.Length);
+
+                        byte[] response = new byte[1024];
+                        int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                        string responseStr = Encoding.UTF8.GetString(response, 0, bytesRead).Trim();
+
+                        if (responseStr == "PROFILE_SAVED")
+                        {
+                            // Update local state
+                            if (isNewProfile)
+                            {
+                                profiles.Add(profile);
+                                cboProfiles.Items.Add(profile.ProfileName);
+                                cboProfiles.SelectedIndex = cboProfiles.Items.Count - 1;
+                            }
+                            currentProfile = profile;
+                            statusLabel.Text = "Đã lưu cấu hình: " + profile.ProfileName;
+                            return true;
+                        }
+                        else
+                        {
+                            MessageBox.Show("Lỗi khi lưu cấu hình: " + responseStr, "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            return false;
+                        }
+                    }
                 }
-                currentProfile = profile;
-                lblProfileStatus.Text = "Đã lưu cấu hình: " + profile.ProfileName;
-                return true;
             }
             catch (Exception ex)
             {
@@ -419,711 +1414,82 @@ namespace SteamCmdGUI
             }
         }
 
-        private void btnSave_Click(object sender, EventArgs e)
+        private async Task RefreshLogsFromService()
         {
-            SaveProfile();
-        }
+            if (!isConnectedToService) return;
 
-        private string SafeFileName(string fileName)
-        {
-            foreach (char c in Path.GetInvalidFileNameChars())
-                fileName = fileName.Replace(c, '_');
-            return fileName;
-        }
-
-        private void btnDelete_Click(object sender, EventArgs e)
-        {
-            if (currentProfile == null || cboProfiles.SelectedIndex <= 0)
-            {
-                MessageBox.Show("Vui lòng chọn cấu hình cần xóa!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            DialogResult result = MessageBox.Show("Bạn có chắc muốn xóa cấu hình \"" + currentProfile.ProfileName + "\"?", "Xác nhận xóa", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (result == DialogResult.Yes)
-            {
-                try
-                {
-                    string filePath = Path.Combine(configFolder, SafeFileName(currentProfile.ProfileName) + ".profile");
-                    if (File.Exists(filePath)) File.Delete(filePath);
-                    profiles.Remove(currentProfile);
-                    LoadProfiles();
-                    MessageBox.Show("Đã xóa cấu hình thành công!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("Lỗi khi xóa cấu hình: " + ex.Message, "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-            }
-        }
-
-        private void DeleteLocalSteamAppsFolder()
-        {
-            string localSteamAppsPath = Path.Combine(Application.StartupPath, "steamapps");
             try
             {
-                if (Directory.Exists(localSteamAppsPath))
-                {
-                    Directory.Delete(localSteamAppsPath, true);
-                    richTextLog.AppendText($"Đã xóa thư mục steamapps tại {localSteamAppsPath}\n");
-                }
-            }
-            catch (Exception ex)
-            {
-                richTextLog.AppendText($"Lỗi khi xóa thư mục steamapps tại {localSteamAppsPath}: {ex.Message}\n");
-                throw;
-            }
-        }
-
-        private void CreateSteamAppsSymLink(string gameInstallDir)
-        {
-            string gameSteamAppsPath = Path.Combine(gameInstallDir, "steamapps");
-            string localSteamAppsPath = Path.Combine(Application.StartupPath, "steamapps");
-            try
-            {
-                if (!Directory.Exists(gameSteamAppsPath))
-                {
-                    Directory.CreateDirectory(gameSteamAppsPath);
-                    richTextLog.AppendText($"Đã tạo thư mục steamapps tại {gameSteamAppsPath}\n");
-                }
-                if (Directory.Exists(localSteamAppsPath))
-                {
-                    Directory.Delete(localSteamAppsPath, true);
-                }
-                ProcessStartInfo mklinkInfo = new ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments = $"/C mklink /D \"{localSteamAppsPath}\" \"{gameSteamAppsPath}\"",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using (Process mklinkProcess = Process.Start(mklinkInfo))
-                {
-                    string output = mklinkProcess.StandardOutput.ReadToEnd();
-                    string error = mklinkProcess.StandardError.ReadToEnd();
-                    mklinkProcess.WaitForExit();
-                    if (mklinkProcess.ExitCode == 0)
-                        richTextLog.AppendText($"Đã tạo symbolic link từ {gameSteamAppsPath} đến {localSteamAppsPath}\n");
-                    else
-                    {
-                        richTextLog.AppendText($"Lỗi khi tạo symbolic link: {error}\n");
-                        throw new Exception($"Không thể tạo symbolic link: {error}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                richTextLog.AppendText($"Lỗi khi tạo symbolic link: {ex.Message}\n");
-                throw;
-            }
-        }
-
-        private void RemoveSteamAppsSymLink()
-        {
-            string localSteamAppsPath = Path.Combine(Application.StartupPath, "steamapps");
-            try
-            {
-                if (Directory.Exists(localSteamAppsPath))
-                {
-                    Directory.Delete(localSteamAppsPath, true);
-                    richTextLog.AppendText($"Đã hủy symbolic link tại {localSteamAppsPath}\n");
-                }
-            }
-            catch (Exception ex)
-            {
-                richTextLog.AppendText($"Lỗi khi hủy symbolic link tại {localSteamAppsPath}: {ex.Message}\n");
-            }
-        }
-
-        private void FixNestedSteamAppsFolder(string gameInstallDir)
-        {
-            string gameSteamAppsPath = Path.Combine(gameInstallDir, "steamapps");
-            string nestedSteamAppsPath = Path.Combine(gameSteamAppsPath, "steamapps");
-            try
-            {
-                if (Directory.Exists(nestedSteamAppsPath))
-                {
-                    richTextLog.AppendText($"Phát hiện thư mục steamapps lồng nhau tại {nestedSteamAppsPath}. Đang xử lý...\n");
-                    foreach (string dir in Directory.GetDirectories(nestedSteamAppsPath))
-                    {
-                        string dirName = Path.GetFileName(dir);
-                        string targetDir = Path.Combine(gameSteamAppsPath, dirName);
-                        if (!Directory.Exists(targetDir))
-                        {
-                            Directory.Move(dir, targetDir);
-                            richTextLog.AppendText($"Đã di chuyển thư mục {dirName} từ {nestedSteamAppsPath} về {gameSteamAppsPath}\n");
-                        }
-                    }
-                    foreach (string file in Directory.GetFiles(nestedSteamAppsPath))
-                    {
-                        string fileName = Path.GetFileName(file);
-                        string targetFile = Path.Combine(gameSteamAppsPath, fileName);
-                        if (!File.Exists(targetFile))
-                        {
-                            File.Move(file, targetFile);
-                            richTextLog.AppendText($"Đã di chuyển file {fileName} từ {nestedSteamAppsPath} về {gameSteamAppsPath}\n");
-                        }
-                    }
-                    if (Directory.GetFiles(nestedSteamAppsPath).Length == 0 && Directory.GetDirectories(nestedSteamAppsPath).Length == 0)
-                    {
-                        Directory.Delete(nestedSteamAppsPath);
-                        richTextLog.AppendText($"Đã xóa thư mục steamapps lồng nhau tại {nestedSteamAppsPath}\n");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                richTextLog.AppendText($"Lỗi khi xử lý thư mục steamapps lồng nhau: {ex.Message}\n");
-            }
-        }
-
-        private void KillSteamAndSteamCmdProcesses()
-        {
-            try
-            {
-                foreach (Process process in Process.GetProcessesByName("steam"))
-                {
-                    if (!process.HasExited)
-                    {
-                        richTextLog.AppendText($"Đang đóng tiến trình steam.exe (PID: {process.Id})...\n");
-                        process.Kill();
-                        process.WaitForExit(5000);
-                        richTextLog.AppendText(process.HasExited ? "Đã đóng steam.exe thành công.\n" : "Không thể đóng steam.exe.\n");
-                    }
-                }
-                foreach (Process process in Process.GetProcessesByName("steamcmd"))
-                {
-                    if (!process.HasExited)
-                    {
-                        richTextLog.AppendText($"Đang đóng tiến trình steamcmd.exe (PID: {process.Id})...\n");
-                        process.Kill();
-                        process.WaitForExit(5000);
-                        richTextLog.AppendText(process.HasExited ? "Đã đóng steamcmd.exe thành công.\n" : "Không thể đóng steamcmd.exe.\n");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                richTextLog.AppendText($"Lỗi khi đóng tiến trình: {ex.Message}\n");
-            }
-        }
-
-        private async void btnRun_Click(object sender, EventArgs e)
-        {
-            if (SaveProfile())
-            {
-                await RunSteamCmdAsync();
-            }
-        }
-
-        private async Task RunSteamCmdAsync()
-        {
-            try
-            {
-                KillSteamAndSteamCmdProcesses();
-                DeleteLocalSteamAppsFolder();
-
-                string steamCmdPath = Path.Combine(Application.StartupPath, "steamcmd.exe");
-                if (!File.Exists(steamCmdPath))
-                {
-                    statusLabel.Text = "Đang tải steamcmd.exe...";
-                    btnRun.Enabled = false;
-                    btnRun.Text = "ĐANG TẢI...";
-                    progressBar.Visible = true;
-                    progressBar.Style = ProgressBarStyle.Marquee;
-
-                    using (var client = new System.Net.WebClient())
-                    {
-                        string zipPath = Path.Combine(Application.StartupPath, "steamcmd.zip");
-                        await client.DownloadFileTaskAsync(new Uri("https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"), zipPath);
-                        using (FileStream zipToOpen = new FileStream(zipPath, FileMode.Open))
-                        using (ZipArchive archive = new ZipArchive(zipToOpen, ZipArchiveMode.Read))
-                        {
-                            foreach (ZipArchiveEntry entry in archive.Entries)
-                            {
-                                string destinationPath = Path.Combine(Application.StartupPath, entry.FullName);
-                                string destinationDir = Path.GetDirectoryName(destinationPath);
-                                if (!Directory.Exists(destinationDir)) Directory.CreateDirectory(destinationDir);
-                                using (Stream entryStream = entry.Open())
-                                using (FileStream fileStream = File.Create(destinationPath))
-                                    await entryStream.CopyToAsync(fileStream);
-                            }
-                        }
-                        File.Delete(zipPath);
-                        if (!File.Exists(steamCmdPath)) throw new Exception("Không thể giải nén steamcmd.exe.");
-                        statusLabel.Text = "Đã tải và giải nén steamcmd.exe thành công!";
-                    }
-                }
-
-                if (!Directory.Exists(txtInstallDir.Text))
-                {
-                    DialogResult result = MessageBox.Show("Thư mục cài đặt không tồn tại. Tạo mới?", "Xác nhận", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-                    if (result == DialogResult.Yes)
-                        Directory.CreateDirectory(txtInstallDir.Text);
-                    else
-                        throw new Exception("Người dùng hủy tạo thư mục.");
-                }
-
-                CreateSteamAppsSymLink(txtInstallDir.Text);
-
-                string usernameToUse = DecryptString(currentProfile.EncryptedUsername);
-                string passwordToUse = DecryptString(currentProfile.EncryptedPassword);
-
-                if (usernameToUse.Length > 0)
-                {
-                    richTextLog.AppendText($"[DEBUG] Thông tin đăng nhập: {usernameToUse.Substring(0, Math.Min(2, usernameToUse.Length))}*** (độ dài: {usernameToUse.Length})\n");
-                }
-                else
-                {
-                    richTextLog.AppendText($"[CẢNH BÁO] Tên đăng nhập rỗng!\n");
-                }
-
-                string arguments = $"+login {usernameToUse} {passwordToUse} +app_update {currentProfile.AppID} {currentProfile.Arguments} +quit";
-
-                statusLabel.Text = "Đang chạy cấu hình: " + currentProfile.ProfileName;
-                btnRun.Enabled = false;
-                btnRun.Text = "ĐANG CHẠY...";
-                btnStop.Enabled = true;
-                progressBar.Visible = true;
-                progressBar.Style = ProgressBarStyle.Marquee;
-
-                if (!runAllProfiles) richTextLog.Clear();
-                else richTextLog.AppendText("\n--- Bắt đầu chạy cấu hình: " + currentProfile.ProfileName + " ---\n");
-
-                if (File.Exists(logFile)) File.Delete(logFile);
-                if (File.Exists(bootstrapLogFile)) File.Delete(bootstrapLogFile);
-
-                ProcessStartInfo startInfo = new ProcessStartInfo
-                {
-                    FileName = steamCmdPath,
-                    Arguments = arguments,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-
-                StringBuilder outputLog = new StringBuilder();
-                bool loginFailed = false;
-                bool operationFailed = false;
-                string errorMessage = "";
-                int retryCount = 0;
-                const int maxRetries = 2;
-
-                while (retryCount <= maxRetries && !cancelAutoRun)
-                {
-                    await Task.Run(() =>
-                    {
-                        using (currentProcess = new Process())
-                        {
-                            currentProcess.StartInfo = startInfo;
-                            currentProcess.OutputDataReceived += (s, args) =>
-                            {
-                                if (args.Data != null)
-                                {
-                                    outputLog.AppendLine(args.Data);
-                                    this.Invoke(new Action(() =>
-                                    {
-                                        richTextLog.AppendText(args.Data + Environment.NewLine);
-                                        richTextLog.ScrollToCaret();
-                                        if (args.Data.Contains("Success!")) statusLabel.Text = "Đã update thành công: " + currentProfile.ProfileName;
-                                        else if (args.Data.Contains("FAILED login") && args.Data.ToLower().Contains("password"))
-                                        {
-                                            loginFailed = true;
-                                            errorMessage = "Sai mật khẩu!";
-                                            statusLabel.Text = "Sai mật khẩu";
-                                        }
-                                        else if (args.Data.Contains("Steam Guard"))
-                                        {
-                                            loginFailed = true;
-                                            errorMessage = "Yêu cầu mã Steam Guard!";
-                                            statusLabel.Text = "2FA";
-                                        }
-                                        else if (args.Data.Contains("ERROR") || args.Data.Contains("FAILED"))
-                                        {
-                                            operationFailed = true;
-                                            if (string.IsNullOrEmpty(errorMessage)) errorMessage = args.Data;
-                                        }
-                                    }));
-                                }
-                            };
-                            currentProcess.ErrorDataReceived += (s, args) =>
-                            {
-                                if (args.Data != null)
-                                {
-                                    outputLog.AppendLine("ERROR: " + args.Data);
-                                    this.Invoke(new Action(() =>
-                                    {
-                                        richTextLog.AppendText("ERROR: " + args.Data + Environment.NewLine);
-                                        richTextLog.ScrollToCaret();
-                                        operationFailed = true;
-                                        if (string.IsNullOrEmpty(errorMessage)) errorMessage = args.Data;
-                                    }));
-                                }
-                            };
-                            currentProcess.Start();
-                            currentProcess.BeginOutputReadLine();
-                            currentProcess.BeginErrorReadLine();
-                            currentProcess.WaitForExit();
-                            File.WriteAllText(logFile, outputLog.ToString());
-                        }
-                        currentProcess = null;
-                    });
-
-                    if (File.Exists(bootstrapLogFile)) File.Delete(bootstrapLogFile);
-
-                    if (cancelAutoRun) break;
-
-                    if (loginFailed)
-                    {
-                        if (runAllProfiles)
-                        {
-                            richTextLog.AppendText($"Lỗi đăng nhập cho {currentProfile.ProfileName}: {errorMessage}\nBỏ qua...\n");
-                            break;
-                        }
-                        else if (errorMessage.Contains("Sai mật khẩu"))
-                        {
-                            MessageBox.Show("Sai mật khẩu! Vui lòng nhập lại.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            break;
-                        }
-                        else if (errorMessage.Contains("Steam Guard"))
-                        {
-                            MessageBox.Show("Yêu cầu mã Steam Guard! Vui lòng nhập mã.", "Xác thực", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                            break;
-                        }
-                        break;
-                    }
-                    else if (operationFailed)
-                    {
-                        if (runAllProfiles) richTextLog.AppendText($"Lỗi cài đặt cho {currentProfile.ProfileName}: {errorMessage}\nBỏ qua...\n");
-                        break;
-                    }
-                    else break;
-                }
-
-                FixNestedSteamAppsFolder(txtInstallDir.Text);
-
-                btnRun.Enabled = true;
-                btnRun.Text = "Start";
-                btnStop.Enabled = false;
-                progressBar.Visible = false;
-
-                if (!runAllProfiles)
-                {
-                    if (loginFailed && retryCount > maxRetries)
-                    {
-                        statusLabel.Text = $"Đăng nhập thất bại sau {maxRetries} lần! {errorMessage}";
-                        richTextLog.AppendText($"Cấu hình {currentProfile.ProfileName}: Thất bại - {errorMessage}\n");
-                        MessageBox.Show($"Đăng nhập thất bại sau {maxRetries} lần!\n{errorMessage}\nKiểm tra lại thông tin.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        autoRunTimer.Stop();
-                        chkAutoRun.Checked = false;
-                        lblProfileStatus.Text = "Chế độ chạy tự động: TẮT (Dừng do lỗi)";
-                    }
-                    else if (operationFailed)
-                    {
-                        statusLabel.Text = $"Lỗi cài đặt! {errorMessage}";
-                        richTextLog.AppendText($"Cấu hình {currentProfile.ProfileName}: Thất bại - {errorMessage}\n");
-                        MessageBox.Show($"Lỗi cài đặt!\n{errorMessage}\nKiểm tra log hoặc thư mục cài đặt.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                    else if (!cancelAutoRun)
-                    {
-                        statusLabel.Text = "SteamCMD hoàn tất thành công!";
-                        richTextLog.AppendText($"Cấu hình {currentProfile.ProfileName}: Thành công\n");
-                    }
-                    else
-                    {
-                        statusLabel.Text = "Đã dừng thủ công.";
-                        richTextLog.AppendText($"Cấu hình {currentProfile.ProfileName}: Đã dừng thủ công\n");
-                    }
-                }
-                else
-                {
-                    if (loginFailed) richTextLog.AppendText($"Cấu hình {currentProfile.ProfileName}: Đăng nhập thất bại - {errorMessage}\n");
-                    else if (operationFailed) richTextLog.AppendText($"Cấu hình {currentProfile.ProfileName}: Thất bại - {errorMessage}\n");
-                    else if (!cancelAutoRun) richTextLog.AppendText($"Cấu hình {currentProfile.ProfileName}: Thành công\n");
-                    else richTextLog.AppendText($"Cấu hình {currentProfile.ProfileName}: Đã dừng thủ công\n");
-                }
-            }
-            catch (Exception ex)
-            {
-                if (runAllProfiles)
-                {
-                    richTextLog.AppendText($"Lỗi với {currentProfile?.ProfileName ?? "Không xác định"}: {ex.Message}\nBỏ qua...\n");
-                    throw;
-                }
-                else
-                {
-                    MessageBox.Show($"Lỗi khi chạy SteamCMD: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    btnRun.Enabled = true;
-                    btnRun.Text = "Start";
-                    btnStop.Enabled = false;
-                    progressBar.Visible = false;
-                    statusLabel.Text = $"Lỗi: {ex.Message}";
-                    richTextLog.AppendText($"Cấu hình {currentProfile?.ProfileName ?? "Không xác định"}: Thất bại - {ex.Message}\n");
-                }
-            }
-            finally
-            {
-                RemoveSteamAppsSymLink();
-                KillSteamAndSteamCmdProcesses();
-                isRunning = false;
-                currentProcess = null;
-                btnRun.Enabled = true;
-                btnRun.Text = "Start";
-                btnStop.Enabled = false;
-                progressBar.Visible = false;
-            }
-        }
-
-        private void OnBtnStopClick(object sender, EventArgs e)
-        {
-            cancelAutoRun = true;
-            if (currentProcess != null && !currentProcess.HasExited)
-            {
-                try
-                {
-                    currentProcess.Kill();
-                    currentProcess.WaitForExit(5000);
-                    if (!currentProcess.HasExited)
-                        MessageBox.Show("Không thể dừng steamcmd.exe. Thử lại hoặc đóng thủ công.", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    else
-                    {
-                        statusLabel.Text = "Đã dừng SteamCMD.";
-                        richTextLog.AppendText("Người dùng đã dừng SteamCMD.\n");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Lỗi khi dừng: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-            }
-            btnRun.Enabled = true;
-            btnRun.Text = "Start";
-            btnStop.Enabled = false;
-            progressBar.Visible = false;
-            isRunning = false;
-            currentProcess = null;
-            RemoveSteamAppsSymLink();
-            KillSteamAndSteamCmdProcesses();
-        }
-
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            KillSteamAndSteamCmdProcesses();
-            if (autoRunTimer != null)
-            {
-                autoRunTimer.Stop();
-                autoRunTimer.Dispose();
-            }
-            RemoveSteamAppsSymLink();
-            base.OnFormClosing(e);
-        }
-
-        private void OnBtnAboutClick(object sender, EventArgs e)
-        {
-            MessageBox.Show("STEAMCMD GUI\nCode by Gà Luộc", "About", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-
-        private string EncryptString(string plainText)
-        {
-            if (string.IsNullOrEmpty(plainText)) return "";
-            byte[] clearBytes = Encoding.Unicode.GetBytes(plainText);
-            using (Aes encryptor = Aes.Create())
-            {
-                Rfc2898DeriveBytes pdb = new Rfc2898DeriveBytes(encryptionKey, new byte[] { 0x49, 0x76, 0x61, 0x6e, 0x20, 0x4d, 0x65, 0x64, 0x76, 0x65, 0x64, 0x65, 0x76 });
-                encryptor.Key = pdb.GetBytes(32);
-                encryptor.IV = pdb.GetBytes(16);
-                using (MemoryStream ms = new MemoryStream())
-                {
-                    using (CryptoStream cs = new CryptoStream(ms, encryptor.CreateEncryptor(), CryptoStreamMode.Write))
-                    {
-                        cs.Write(clearBytes, 0, clearBytes.Length);
-                        cs.Close();
-                    }
-                    return Convert.ToBase64String(ms.ToArray());
-                }
-            }
-        }
-
-        private string DecryptString(string cipherText)
-        {
-            if (string.IsNullOrEmpty(cipherText)) return "";
-            byte[] cipherBytes = Convert.FromBase64String(cipherText);
-            using (Aes encryptor = Aes.Create())
-            {
-                Rfc2898DeriveBytes pdb = new Rfc2898DeriveBytes(encryptionKey, new byte[] { 0x49, 0x76, 0x61, 0x6e, 0x20, 0x4d, 0x65, 0x64, 0x76, 0x65, 0x64, 0x65, 0x76 });
-                encryptor.Key = pdb.GetBytes(32);
-                encryptor.IV = pdb.GetBytes(16);
-                using (MemoryStream ms = new MemoryStream())
-                {
-                    using (CryptoStream cs = new CryptoStream(ms, encryptor.CreateDecryptor(), CryptoStreamMode.Write))
-                    {
-                        cs.Write(cipherBytes, 0, cipherBytes.Length);
-                        cs.Close();
-                    }
-                    return Encoding.Unicode.GetString(ms.ToArray());
-                }
-            }
-        }
-
-        private async Task SendProfilesToServerAsync()
-        {
-            try
-            {
-                string serverIp = "idckz.ddnsfree.com";
-                int serverPort = 61188;
-                string authToken = "simple_auth_token";
-
                 using (TcpClient client = new TcpClient())
                 {
-                    await client.ConnectAsync(serverIp, serverPort);
-                    NetworkStream stream = client.GetStream();
-
-                    string request = $"AUTH:{authToken} SEND_PROFILES";
-                    byte[] requestBytes = Encoding.UTF8.GetBytes(request);
-                    await stream.WriteAsync(requestBytes, 0, requestBytes.Length);
-
-                    byte[] buffer = new byte[1024];
-                    int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    string response = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
-
-                    if (response == "READY_TO_RECEIVE")
+                    await client.ConnectAsync(ServiceAddress, ServicePort);
+                    using (NetworkStream stream = client.GetStream())
                     {
-                        foreach (GameProfile profile in profiles)
+                        byte[] request = Encoding.UTF8.GetBytes("GET_LOGS");
+                        await stream.WriteAsync(request, 0, request.Length);
+
+                        byte[] response = new byte[32768]; // 32KB buffer for logs
+                        int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                        string logs = Encoding.UTF8.GetString(response, 0, bytesRead);
+
+                        if (!string.IsNullOrEmpty(logs))
                         {
-                            XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
-                            using (StringWriter writer = new StringWriter())
+                            this.Invoke(new Action(() =>
                             {
-                                serializer.Serialize(writer, profile);
-                                string xmlProfile = writer.ToString();
-                                byte[] profileBytes = Encoding.UTF8.GetBytes(xmlProfile);
-
-                                byte[] lengthBytes = BitConverter.GetBytes(profileBytes.Length);
-                                await stream.WriteAsync(lengthBytes, 0, lengthBytes.Length);
-                                await stream.WriteAsync(profileBytes, 0, profileBytes.Length);
-                                //richTextLog.AppendText($"Đã gửi profile {profile.ProfileName} ({profileBytes.Length} bytes)\n");
-                            }
+                                richTextLog.AppendText(logs);
+                                richTextLog.SelectionStart = richTextLog.Text.Length;
+                                richTextLog.ScrollToCaret();
+                            }));
                         }
-
-                        byte[] endBytes = BitConverter.GetBytes(0);
-                        await stream.WriteAsync(endBytes, 0, endBytes.Length);
-                        //richTextLog.AppendText("Đã gửi tín hiệu kết thúc.\n");
-                    }
-                    else
-                    {
-                        richTextLog.AppendText($"Server không sẵn sàng nhận profile: {response}\n");
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                richTextLog.AppendText($"Lỗi khi gửi profile đến server: {ex.Message}\n");
+                // Ignore log refresh errors to prevent flooding the UI with error messages
             }
         }
 
-        private async void btnConnectToServer_Click(object sender, EventArgs e)
+        private async Task RefreshStatusFromService()
         {
+            if (!isConnectedToService) return;
+
             try
             {
-                string serverIp = "idckz.ddnsfree.com";
-                int serverPort = 61188;
-                string authToken = "simple_auth_token";
-
                 using (TcpClient client = new TcpClient())
                 {
-                    await client.ConnectAsync(serverIp, serverPort);
-                    NetworkStream stream = client.GetStream();
-
-                    string request = $"AUTH:{authToken} GET_PROFILES";
-                    byte[] requestBytes = Encoding.UTF8.GetBytes(request);
-                    await stream.WriteAsync(requestBytes, 0, requestBytes.Length);
-
-                    byte[] buffer = new byte[1024];
-                    int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    string response = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
-
-                    if (response == "NO_PROFILES")
-                        MessageBox.Show("Server không có profile nào!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    else if (response == "AUTH_FAILED")
-                        MessageBox.Show("Xác thực thất bại!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    else if (response == "INVALID_REQUEST")
-                        MessageBox.Show("Yêu cầu không hợp lệ!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    else
+                    await client.ConnectAsync(ServiceAddress, ServicePort);
+                    using (NetworkStream stream = client.GetStream())
                     {
-                        string[] profileNames = response.Split(',');
-                        listBoxProfiles.Items.Clear();
-                        foreach (string profileName in profileNames)
-                            listBoxProfiles.Items.Add(profileName);
-                        MessageBox.Show("Đã nhận danh sách profile từ server!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        byte[] request = Encoding.UTF8.GetBytes("GET_STATUS");
+                        await stream.WriteAsync(request, 0, request.Length);
+
+                        byte[] response = new byte[1024];
+                        int bytesRead = await stream.ReadAsync(response, 0, response.Length);
+                        string status = Encoding.UTF8.GetString(response, 0, bytesRead);
+
+                        if (status != lastStatus)
+                        {
+                            lastStatus = status;
+
+                            this.Invoke(new Action(() =>
+                            {
+                                ParseAndDisplayStatus(status);
+                            }));
+                        }
                     }
                 }
-
-                await SendProfilesToServerAsync();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                MessageBox.Show("Lỗi khi kết nối đến server", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                richTextLog.AppendText($"Lỗi kết nối server: {ex.Message}\n");
-            }
-        }
-
-        private async void listBoxProfiles_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            if (listBoxProfiles.SelectedItem != null)
-            {
-                string selectedProfileName = listBoxProfiles.SelectedItem.ToString();
-                GameProfile profile = await GetProfileFromServerAsync(selectedProfileName);
-                if (profile != null)
+                // Ignore status refresh errors
+                this.Invoke(new Action(() =>
                 {
-                    LoadProfileToUI(profile);
-                    currentProfile = profile;
-                    lblProfileStatus.Text = $"Đã tải profile từ server: {profile.ProfileName}";
-                }
+                    isConnectedToService = false;
+                    btnServiceControl.Text = "Khởi động Service";
+                }));
             }
         }
 
-        private async Task<GameProfile> GetProfileFromServerAsync(string profileName)
+        private void ParseAndDisplayStatus(string status)
         {
-            try
-            {
-                string serverIp = "idckz.ddnsfree.com";
-                int serverPort = 61188;
-                string authToken = "simple_auth_token";
-
-                using (TcpClient client = new TcpClient())
-                {
-                    richTextLog.AppendText($"Đang yêu cầu chi tiết profile {profileName} từ server...\n");
-                    await client.ConnectAsync(serverIp, serverPort);
-                    NetworkStream stream = client.GetStream();
-
-                    string request = $"AUTH:{authToken} GET_PROFILE_DETAILS {profileName}";
-                    byte[] requestBytes = Encoding.UTF8.GetBytes(request);
-                    await stream.WriteAsync(requestBytes, 0, requestBytes.Length);
-
-                    byte[] buffer = new byte[4096];
-                    int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    string response = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
-
-                    if (response == "PROFILE_NOT_FOUND")
-                    {
-                        MessageBox.Show($"Không tìm thấy profile {profileName} trên server!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return null;
-                    }
-
-                    using (StringReader reader = new StringReader(response))
-                    {
-                        XmlSerializer serializer = new XmlSerializer(typeof(GameProfile));
-                        return (GameProfile)serializer.Deserialize(reader);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Lỗi khi lấy chi detailing profile: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                richTextLog.AppendText($"Lỗi khi lấy profile {profileName}: {ex.Message}\n");
-                return null;
-            }
-        }
-    }
-}

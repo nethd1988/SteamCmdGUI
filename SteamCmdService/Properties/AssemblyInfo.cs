@@ -5,11 +5,11 @@ using System.Runtime.InteropServices;
 // General Information about an assembly is controlled through the following
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("Sever")]
+[assembly: AssemblyTitle("SteamCmdService")]
 [assembly: AssemblyDescription("")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Kzonesoft")]
-[assembly: AssemblyProduct("Sever")]
+[assembly: AssemblyProduct("SteamCmdService")]
 [assembly: AssemblyCopyright("Copyright © Kzonesoft 2025")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
@@ -20,7 +20,7 @@ using System.Runtime.InteropServices;
 [assembly: ComVisible(false)]
 
 // The following GUID is for the ID of the typelib if this project is exposed to COM
-[assembly: Guid("8e85f002-efe8-4700-a690-79825fd36b10")]
+[assembly: Guid("bc49f2d9-0a26-4140-8530-6066ae9abd5f")]
 
 // Version information for an assembly consists of the following four values:
 //
